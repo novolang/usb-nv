@@ -1,0 +1,184 @@
+// usbenum.nv — what is plugged in, read from the kernel's own
+// description of the bus.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE ONE MODULE IN THIS PACKAGE THAT PERFORMS, and the manifest names
+// it in `host_modules` for that reason.  Its row is `[fs]` and nothing
+// else: Linux publishes every fact a host needs to CHOOSE a device —
+// vendor, product, class, serial number, speed, bus, address, port
+// chain, which driver holds each interface — as small text files under
+// `/sys/bus/usb/devices/`, and reading them is an ordinary file read.
+//
+// SO ENUMERATION NEEDS NO C LIBRARY AND TRANSFERS DO.  That split is
+// the argument for this module existing beside `usbxfer` rather than
+// inside its trait.  A program that lists what is attached, waits for
+// a particular device to appear, or reports which driver has claimed
+// an interface never opens a device node at all — and a tool that does
+// all three is useful with no backend on the machine.  Submitting a
+// URB is the other half, it needs an ioctl, and `UsbHostBackend` is
+// where it goes.
+//
+// LINUX ONLY, AND SAID OUT LOUD.  `/sys` is not portable and this
+// module does not pretend otherwise: `is_supported` answers whether
+// the tree is there, and a caller on another system gets a false and a
+// clear road to the backend rather than an empty list that looks like
+// "nothing is plugged in".
+
+// ── What sysfs knows about a device ──────────────────────────────────
+
+// One attached device, as the kernel describes it.
+//
+// A plain struct rather than a `@value` one, because the three `Str`
+// fields are the point of the type — a chooser matches on the product
+// name and the serial number — and a `@value` struct cannot own text.
+// This is a `host` module; nothing here goes in firmware.
+//
+// THE IDENTIFIER IS FOUR FLAT FIELDS AND NOT A `UsbDeviceId`.  A
+// boxed struct stores pointer-shaped slots, so a `@value` struct
+// cannot be one of its fields (E2015) — which means the type
+// `usbxfer`'s transfer surface takes cannot also be a member here.
+// The four numbers are carried flat and `info_id` assembles one, which
+// costs a caller one call and keeps `UsbDeviceId` unboxed where it
+// matters, in the transfer path.
+pub struct UsbDeviceInfo
+    // The bus number.
+    bus: Int
+    // The device address on that bus.
+    address: Int
+    // The hub port chain from the root, one nibble per hop.
+    port_path: Int
+    // How many hops the port chain holds.
+    port_depth: Int
+    // idVendor.
+    vendor: Int
+    // idProduct.
+    product: Int
+    // bcdDevice.
+    device_version: Int
+    // bDeviceClass, which is 0 for a device whose interfaces carry the
+    // class.
+    device_class: Int
+    // The manufacturer string, or empty.
+    manufacturer: Str
+    // The product string, or empty.
+    product_name: Str
+    // The serial number string, or empty.  The only field that tells
+    // two identical devices apart, and the one a great many products
+    // leave blank.
+    serial: Str
+    // The negotiated speed, as a `USB_SPEED_*` code.
+    speed: Int
+    // The sysfs directory this was read from, so a caller can go back
+    // for an attribute this type does not carry.
+    sysfs_path: Str
+
+// The device's identifier, assembled from the four flat fields, ready
+// to hand to `usbxfer`'s transfer surface.
+pub fn info_id(d: UsbDeviceInfo) -> UsbDeviceId [fs]
+    todo("usb-nv.usbenum.info_id")
+
+// Whether this machine publishes a USB tree at all.
+//
+// ```novo
+// use usbenum
+//
+// fn main() [io, fs]
+//     println("${usbenum.is_supported()}")
+// ```
+pub fn is_supported() -> Bool [fs]
+    todo("usb-nv.usbenum.is_supported")
+
+// Every device currently attached, in bus and address order.
+//
+// `[fs]` — a directory listing and a handful of small reads per
+// device, and nothing else.
+//
+// ```novo
+// use usbenum
+//
+// fn main() [io, fs]
+//     match usbenum.devices()
+//         Ok(found) => println("${list.len(found)}")
+//         Err(e)    => println(e.message())
+// ```
+pub fn devices() -> Result<[UsbDeviceInfo], UsbError> [fs]
+    todo("usb-nv.usbenum.devices")
+
+// Every attached device whose vendor and product match.
+//
+// `product` of -1 matches any product from that vendor, which is the
+// shape a tool for a family of boards wants.
+pub fn devices_matching(vendor: Int, product: Int) -> Result<[UsbDeviceInfo], UsbError> [fs]
+    todo("usb-nv.usbenum.devices_matching")
+
+// The device with this serial number, or nothing.
+pub fn device_with_serial(serial: Str) -> Result<?UsbDeviceInfo, UsbError> [fs]
+    todo("usb-nv.usbenum.device_with_serial")
+
+// The device at this port path, which survives a replug where an
+// address does not.
+pub fn device_at_port(path: Str) -> Result<?UsbDeviceInfo, UsbError> [fs]
+    todo("usb-nv.usbenum.device_at_port")
+
+// Read one device's facts out of a sysfs directory.
+//
+// The function the four above are written over, exposed because a
+// caller watching for hotplug events already has the directory name
+// and should not have to re-scan the tree to learn what appeared.
+pub fn read_device(sysfs_path: Str) -> Result<UsbDeviceInfo, UsbError> [fs]
+    todo("usb-nv.usbenum.read_device")
+
+// Which kernel driver holds each interface of a device, in interface
+// order, with an empty string where none does.
+//
+// The answer to "why is this device busy", which is the question every
+// first attempt at a USB tool asks after its first failure.  A CDC
+// device on Linux is bound to `cdc_acm` from the moment it enumerates,
+// and a tool that does not detach the driver gets a refusal naming
+// nothing.
+pub fn interface_drivers(d: UsbDeviceInfo) -> Result<[Str], UsbError> [fs]
+    todo("usb-nv.usbenum.interface_drivers")
+
+// The interface descriptors a device publishes, decoded from the
+// configuration descriptor sysfs carries whole.
+pub fn interfaces(d: UsbDeviceInfo) -> Result<[Int], UsbError> [fs]
+    todo("usb-nv.usbenum.interfaces")
+
+// The raw bytes of the device's active configuration descriptor,
+// interfaces and endpoints included.
+//
+// sysfs publishes the whole thing, so a host tool inspects a device's
+// descriptors without opening it and without a backend at all — which
+// is what makes this module worth having beside the trait rather than
+// inside it.
+pub fn raw_descriptors(d: UsbDeviceInfo) -> Result<Bytes, UsbError> [fs]
+    todo("usb-nv.usbenum.raw_descriptors")
+
+// ── Reading the record ───────────────────────────────────────────────
+
+// idVendor.
+pub fn info_vendor(d: UsbDeviceInfo) -> Int [fs]
+    todo("usb-nv.usbenum.info_vendor")
+
+// idProduct.
+pub fn info_product(d: UsbDeviceInfo) -> Int [fs]
+    todo("usb-nv.usbenum.info_product")
+
+// The product string, or the vendor and product numbers in hex when
+// the device published none.
+pub fn info_name(d: UsbDeviceInfo) -> Str [fs]
+    todo("usb-nv.usbenum.info_name")
+
+// The serial number, or empty.
+pub fn info_serial(d: UsbDeviceInfo) -> Str [fs]
+    todo("usb-nv.usbenum.info_serial")
+
+// The negotiated speed as a `USB_SPEED_*` code.
+pub fn info_speed(d: UsbDeviceInfo) -> Int [fs]
+    todo("usb-nv.usbenum.info_speed")
+
+// One line describing the device, in the shape `lsusb` prints:
+// `Bus 001 Device 007: ID 1209:0001 novo-lang example`.
+pub fn info_line(d: UsbDeviceInfo) -> Str [fs]
+    todo("usb-nv.usbenum.info_line")

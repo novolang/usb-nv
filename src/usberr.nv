@@ -1,0 +1,112 @@
+// usberr.nv — one error type for the whole package.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// Every variant is prefixed `Usb`, because a variant is constructed by
+// NAME rather than by the type the expression expects: an unprefixed
+// `Stall` or `Timeout` in this package would bind whichever package's
+// variant of that name the assembly declared first, and the program
+// would fail to typecheck somewhere else entirely.
+//
+// A DESCRIPTOR FAULT AND A TRANSFER FAULT ARE THE SAME TYPE, on
+// purpose.  They happen in different halves of the package and a
+// caller that writes a descriptor set never meets the transfer
+// variants, but the two halves meet at the host tool that builds a
+// request and performs it, and two error types there would mean a
+// conversion nobody wants to write.
+
+// What went wrong.
+pub enum UsbError
+    // A descriptor field is outside the range the specification allows
+    // for it — a control packet size that is not 8, 16, 32 or 64, a
+    // configuration value of 0, an endpoint number above 15.  `field`
+    // names the field and `value` is what it held.
+    UsbBadDescriptorField(field: Str, value: Int)
+    // A packet size the specification does not allow for that transfer
+    // type at that speed.  The device enumerates and then moves no
+    // data, so it is worth its own variant.
+    UsbBadPacketSize(transfer_type: Int, speed: Int, size: Int)
+    // The bytes offered are shorter than the descriptor they claim to
+    // be.  `want` is the length the header declared and `have` is what
+    // arrived.
+    UsbShortDescriptor(want: Int, have: Int)
+    // A descriptor's type byte is not the one the reader asked for.
+    UsbWrongDescriptorType(want: Int, found: Int)
+    // A SETUP packet the device does not implement.  The device
+    // answers a STALL, which is the specification's way of saying "not
+    // supported" and is NOT an error on the bus.
+    UsbUnsupportedRequest(request_type: Int, request: Int)
+    // A control transfer arrived in the wrong order — a status stage
+    // before the data stage finished, a second SETUP inside a
+    // transfer.  `state` is the state machine's own code.
+    UsbBadControlSequence(state: Int)
+    // The host asked for more data than the request can carry, or the
+    // device offered more than the host asked for.
+    UsbLengthMismatch(want: Int, have: Int)
+    // The endpoint stalled.  A recoverable condition: the host clears
+    // it with CLEAR_FEATURE(ENDPOINT_HALT).
+    UsbStalled(endpoint: Int)
+    // The transfer did not complete inside the deadline the caller
+    // gave it.
+    UsbTimedOut(endpoint: Int)
+    // The device went away mid-transfer.
+    UsbDisconnected
+    // The backend refused the operation — no permission on the device
+    // node, the interface is claimed by a kernel driver, the bus is
+    // gone.  `detail` is the backend's own words.
+    UsbBackendRefused(detail: Str)
+    // A HID report descriptor that does not parse, or that describes a
+    // report longer than the endpoint can carry.
+    UsbBadReportDescriptor(at: Int)
+    // A CDC line coding a UART cannot be set to.
+    UsbBadLineCoding(baud: Int, data_bits: Int)
+
+// The one-line report: what was refused, and the number that decided
+// it.  Every message names the value, because the whole difficulty of
+// a device that will not enumerate is that the host says only that it
+// failed.
+//
+// `Result<_, UsbError>` requires this impl: SPEC § 3.4 admits a
+// `Result` error type only if it implements `Error`.
+//
+// ```novo
+// use usberr
+//
+// fn main() [io]
+//     println(usberr.describe(UsbDisconnected))
+// ```
+impl Error for UsbError
+    fn message(self) -> Str
+        todo("usb-nv.usberr.UsbError.message")
+
+// The same sentence as `message`, as a free function, for a caller
+// that has an error value rather than a `Result` to call `.message()`
+// on.
+//
+// ```novo
+// use usberr
+//
+// fn main() [io]
+//     println(usberr.describe(UsbStalled(1)))
+// ```
+pub fn describe(e: UsbError) -> Str []
+    todo("usb-nv.usberr.describe")
+
+// Whether the fault is one the host clears and retries — a stall on a
+// non-control endpoint, a timeout — rather than one that ends the
+// conversation.
+//
+// A driver's retry loop is the only place the distinction matters, and
+// it is the place a caller most often gets it wrong: a stall on
+// endpoint 0 is the device saying "not supported" and retrying it
+// loops forever, while a stall on a bulk endpoint is a condition
+// CLEAR_FEATURE clears.
+//
+// ```novo
+// use usberr
+//
+// fn main() [io]
+//     println("${usberr.is_recoverable(UsbStalled(1))}")
+// ```
+pub fn is_recoverable(e: UsbError) -> Bool []
+    todo("usb-nv.usberr.is_recoverable")

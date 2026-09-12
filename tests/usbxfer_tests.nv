@@ -1,0 +1,61 @@
+// usbxfer_tests.nv — the host side: the identifier that survives a
+// replug, the zero-length-packet rule, and the request-type byte.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbxfer.<fn>`.
+//
+// NOTHING HERE PERFORMS A TRANSFER, and that is the module's argument
+// rather than a gap in the test: `UsbHostBackend[e]` has no
+// implementation in this project, so what can be asserted without one
+// is exactly what belongs in a `core` module — the arithmetic a driver
+// does around a transfer.  The transfer paths become testable the day
+// someone writes a backend over a recorded capture, and the trait is
+// shaped so that backend declares `[fs]` and the same call sites work.
+
+use std.test
+use usbxfer
+
+@test
+fn test_a_port_path_survives_a_replug_and_an_address_does_not() [io]
+    test.case("bus 1, address 7, plugged into port 1 of a hub in port 2 of the root")
+    let d = usbxfer.device_id(1, 7, 0x21, 2)
+    test.assert_eq(usbxfer.device_bus(d), 1)
+    test.assert_eq(usbxfer.device_address(d), 7)
+    test.assert_eq(usbxfer.device_port_depth(d), 2)
+
+    test.case("and the kernel's own spelling of that path is 1-2.1")
+    test.assert_eq(usbxfer.port_path_name(d), "1-2.1")
+
+@test
+fn test_a_root_port_device_has_a_one_hop_path() [io]
+    let d = usbxfer.device_id(2, 3, 0x04, 1)
+    test.assert_eq(usbxfer.port_path_name(d), "2-4")
+
+@test
+fn test_a_whole_packet_needs_a_zero_length_packet_after_it() [io]
+    test.case("a receiver reading until a short packet waits forever behind a 64-byte payload on a 64-byte endpoint")
+    test.assert(usbxfer.needs_zlp(64, 64))
+    test.assert(usbxfer.needs_zlp(128, 64))
+    test.assert(usbxfer.needs_zlp(512, 512))
+
+    test.case("and a short last packet is itself the end of the transfer")
+    test.assert(usbxfer.needs_zlp(63, 64) == false)
+    test.assert(usbxfer.needs_zlp(65, 64) == false)
+
+    test.case("an empty payload is already a zero-length packet")
+    test.assert(usbxfer.needs_zlp(0, 64) == false)
+
+@test
+fn test_the_request_type_byte_packs_direction_kind_and_recipient() [io]
+    test.case("a standard device GET is 0x80 and a standard device SET is 0x00")
+    test.assert_eq(usbxfer.request_type(true, 0x00, 0x00), 0x80)
+    test.assert_eq(usbxfer.request_type(false, 0x00, 0x00), 0x00)
+
+    test.case("a class request to an interface — how SET_LINE_CODING arrives — is 0x21")
+    test.assert_eq(usbxfer.request_type(false, 0x20, 0x01), 0x21)
+
+    test.case("a vendor request to the device with a data-in stage, which is how WebUSB fetches a URL, is 0xC0")
+    test.assert_eq(usbxfer.request_type(true, 0x40, 0x00), 0xC0)
+
+    test.case("and a standard request to an endpoint — CLEAR_FEATURE(ENDPOINT_HALT) — is 0x02")
+    test.assert_eq(usbxfer.request_type(false, 0x00, 0x02), 0x02)

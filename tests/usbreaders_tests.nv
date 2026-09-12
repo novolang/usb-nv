@@ -1,0 +1,162 @@
+// usbreaders_tests.nv — every accessor named once, against the value
+// it was constructed from.
+//
+// RED ON PURPOSE, like the rest: every call reaches
+// `not implemented: usb-nv.<module>.<fn>`.
+//
+// WHY THIS FILE EXISTS SEPARATELY.  The other suites assert BEHAVIOUR —
+// the deferred address, the zero-length packet rule, the two CDC class
+// codes — and adding "and the getter for bcdDevice returns bcdDevice"
+// to them would bury the arguments under bookkeeping.  A `@value`
+// record's accessors are bookkeeping: there is one right answer, it is
+// the field, and the only thing worth checking is that the whole set
+// is reachable and that none of them is wired to the wrong slot.
+//
+// It is also the file that will catch a field REORDERING, which is the
+// one way a record of eleven integers can break without any signature
+// changing: every value below is distinct, so a getter reading its
+// neighbour's slot fails here and passes everywhere else.
+
+use std.test
+use usbdesc
+use usbcdc
+use usbhid
+use usbxfer
+
+@test
+fn test_every_device_descriptor_field_reads_back_the_value_it_was_given() [io]
+    test.case("eleven distinct numbers, so a getter reading its neighbour's slot is visible")
+    let d = usbdesc.device_desc(0x0210, 0xEF, 0x02, 0x01, 32,
+                                0x1209, 0x0001, 0x0304, 5, 6, 7, 2)
+    test.assert_eq(usbdesc.bcd_usb(d), 0x0210)
+    test.assert_eq(usbdesc.device_class(d), 0xEF)
+    test.assert_eq(usbdesc.device_sub_class(d), 0x02)
+    test.assert_eq(usbdesc.device_protocol(d), 0x01)
+    test.assert_eq(usbdesc.max_packet_size0(d), 32)
+    test.assert_eq(usbdesc.id_vendor(d), 0x1209)
+    test.assert_eq(usbdesc.id_product(d), 0x0001)
+    test.assert_eq(usbdesc.bcd_device(d), 0x0304)
+    test.assert_eq(usbdesc.i_manufacturer(d), 5)
+    test.assert_eq(usbdesc.i_product(d), 6)
+    test.assert_eq(usbdesc.i_serial_number(d), 7)
+    test.assert_eq(usbdesc.num_configurations(d), 2)
+
+@test
+fn test_every_configuration_descriptor_field_reads_back() [io]
+    let c = usbdesc.config_desc(98, 3, 1, 4, 0xA0, 25)
+    test.assert_eq(usbdesc.total_length(c), 98)
+    test.assert_eq(usbdesc.num_interfaces(c), 3)
+    test.assert_eq(usbdesc.configuration_value(c), 1)
+    test.assert_eq(usbdesc.i_configuration(c), 4)
+    test.assert_eq(usbdesc.config_attributes(c), 0xA0)
+    test.assert_eq(usbdesc.max_power_units(c), 25)
+
+@test
+fn test_every_interface_descriptor_field_reads_back() [io]
+    let i = usbdesc.interface_desc(2, 1, 3, 0x0A, 0x04, 0x05, 6)
+    test.assert_eq(usbdesc.interface_number(i), 2)
+    test.assert_eq(usbdesc.alternate_setting(i), 1)
+    test.assert_eq(usbdesc.num_endpoints(i), 3)
+    test.assert_eq(usbdesc.interface_class(i), 0x0A)
+    test.assert_eq(usbdesc.interface_sub_class(i), 0x04)
+    test.assert_eq(usbdesc.interface_protocol(i), 0x05)
+    test.assert_eq(usbdesc.i_interface(i), 6)
+    test.assert_eq(usbdesc.interface_desc_byte(i, 2), 2)
+
+@test
+fn test_every_endpoint_descriptor_field_reads_back() [io]
+    let e = usbdesc.endpoint_desc(0x83, usbdesc.USB_XFER_INTERRUPT, 16, 10)
+    test.assert_eq(usbdesc.endpoint_address(e), 0x83)
+    test.assert_eq(usbdesc.endpoint_attributes(e), usbdesc.USB_XFER_INTERRUPT)
+    test.assert_eq(usbdesc.max_packet_size(e), 16)
+    test.assert_eq(usbdesc.interval(e), 10)
+
+@test
+fn test_every_cdc_configuration_field_reads_back() [io]
+    let c = usbcdc.cdc_config(4, 5, 0x85, 0x86, 0x06, 64, 16)
+    test.assert_eq(usbcdc.comm_interface(c), 4)
+    test.assert_eq(usbcdc.data_interface(c), 5)
+    test.assert_eq(usbcdc.notify_endpoint(c), 0x85)
+    test.assert_eq(usbcdc.in_endpoint(c), 0x86)
+    test.assert_eq(usbcdc.out_endpoint(c), 0x06)
+    test.assert_eq(usbcdc.packet_size(c), 64)
+
+@test
+fn test_the_three_cdc_endpoint_descriptors_point_the_right_ways() [io]
+    let c = usbcdc.cdc_config(0, 1, 0x81, 0x82, 0x02, 64, 16)
+    test.assert(usbdesc.endpoint_is_in(
+        usbdesc.endpoint_address(usbcdc.cdc_notify_endpoint_desc(c))))
+    test.assert(usbdesc.endpoint_is_in(
+        usbdesc.endpoint_address(usbcdc.cdc_in_endpoint_desc(c))))
+    test.assert(usbdesc.endpoint_is_in(
+        usbdesc.endpoint_address(usbcdc.cdc_out_endpoint_desc(c))) == false)
+
+    test.case("and the notification endpoint is interrupt where the data ones are bulk")
+    test.assert_eq(usbdesc.transfer_type(usbcdc.cdc_notify_endpoint_desc(c)),
+                   usbdesc.USB_XFER_INTERRUPT)
+    test.assert_eq(usbdesc.transfer_type(usbcdc.cdc_in_endpoint_desc(c)),
+                   usbdesc.USB_XFER_BULK)
+
+@test
+fn test_the_line_coding_decoder_is_the_inverse_of_the_encoder() [io]
+    test.case("a device stores what SET_LINE_CODING sent and GET_LINE_CODING must hand back the same seven bytes")
+    // 9600 8E2: 0x2580 little-endian, two stop bits, even parity,
+    // seven data bits — the seven bytes a host puts on endpoint 0.
+    let wire: [u8] = [0x80 as u8, 0x25 as u8, 0x00 as u8, 0x00 as u8,
+                      0x02 as u8, 0x02 as u8, 0x07 as u8]
+    let back = usbcdc.line_coding_decode(wire, 0)
+    test.assert_eq(usbcdc.baud(back), 9600)
+    test.assert_eq(usbcdc.stop_bits(back), usbcdc.USB_CDC_STOP_2)
+    test.assert_eq(usbcdc.parity(back), usbcdc.USB_CDC_PARITY_EVEN)
+    test.assert_eq(usbcdc.data_bits(back), 7)
+
+    test.case("and encoding it again gives the same bytes back")
+    let l = usbcdc.line_coding(9600, usbcdc.USB_CDC_STOP_2,
+                               usbcdc.USB_CDC_PARITY_EVEN, 7)
+    test.assert_eq(usbcdc.line_coding_byte(l, 0), 0x80)
+    test.assert_eq(usbcdc.line_coding_byte(l, 1), 0x25)
+    test.assert_eq(usbcdc.line_coding_byte(l, 4), 0x02)
+    test.assert_eq(usbcdc.line_coding_byte(l, 5), 0x02)
+    test.assert_eq(usbcdc.line_coding_byte(l, 6), 0x07)
+
+@test
+fn test_the_hid_descriptor_readers_read_back() [io]
+    let h = usbhid.hid_desc(0x0111, 33, 50)
+    test.assert_eq(usbhid.hid_bcd(h), 0x0111)
+    test.assert_eq(usbhid.hid_country_code(h), 33)
+    test.assert_eq(usbhid.hid_report_length(h), 50)
+
+@test
+fn test_the_remaining_hid_item_builders_encode_their_tags() [io]
+    test.case("usage minimum and maximum name a RANGE of usages instead of listing them, which is how a keyboard declares 224 key codes in four bytes")
+    test.assert_eq(usbhid.hid_item_byte(usbhid.usage_min(0), 0), 0x19)
+    test.assert_eq(usbhid.hid_item_byte(usbhid.usage_max(101), 0), 0x29)
+    test.assert_eq(usbhid.hid_item_byte(usbhid.usage_max(101), 1), 101)
+
+    test.case("a report identifier makes EVERY report gain a leading byte, including the ones already working")
+    test.assert_eq(usbhid.hid_item_byte(usbhid.report_id(1), 0), 0x85)
+
+    test.case("output is how a keyboard's LEDs arrive and feature is read over the control endpoint")
+    test.assert_eq(usbhid.hid_item_byte(usbhid.output(usbhid.USB_HID_ITEM_VARIABLE), 0), 0x91)
+    test.assert_eq(usbhid.hid_item_byte(usbhid.feature(usbhid.USB_HID_ITEM_VARIABLE), 0), 0xB1)
+
+@test
+fn test_the_boot_mouse_readers_read_back() [io]
+    let m = usbhid.boot_mouse_report(usbhid.USB_HID_BUTTON_MIDDLE, 12, 0 - 8)
+    test.assert_eq(usbhid.boot_mouse_buttons(m), usbhid.USB_HID_BUTTON_MIDDLE)
+    test.assert_eq(usbhid.boot_mouse_dx(m), 12)
+    test.assert_eq(usbhid.boot_mouse_dy(m), 0 - 8)
+
+@test
+fn test_the_boot_mouse_report_descriptor_is_fifty_bytes() [io]
+    test.assert_eq(usbhid.USB_HID_BOOT_MOUSE_DESC_LEN, 50)
+    test.assert_eq(usbhid.boot_mouse_report_desc_byte(0), 0x05)
+    test.assert_eq(usbhid.boot_mouse_report_desc_byte(1), 0x01)
+    test.assert_eq(usbhid.boot_mouse_report_desc_byte(3), usbhid.USB_HID_USAGE_MOUSE)
+    test.assert_eq(usbhid.boot_mouse_report_desc_byte(49), 0xC0)
+
+@test
+fn test_the_packed_port_path_is_readable_as_a_number_too() [io]
+    test.case("a tool matching on the socket rather than the address wants the packed form, not the printed one")
+    let d = usbxfer.device_id(1, 7, 0x21, 2)
+    test.assert_eq(usbxfer.device_port_path(d), 0x21)

@@ -1,0 +1,50 @@
+// usberr_tests.nv — the error type: that every variant has words, and
+// that the one distinction a retry loop needs is drawn.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usberr.<fn>`.
+
+use std.test
+use usberr
+
+@test
+fn test_every_variant_says_something() [io]
+    test.case("a device that will not enumerate is a host saying only that it failed, so every message names its number")
+    test.assert(str.len(usberr.describe(UsbBadDescriptorField("bMaxPacketSize0", 48))) > 0)
+    test.assert(str.len(usberr.describe(UsbBadPacketSize(2, 2, 256))) > 0)
+    test.assert(str.len(usberr.describe(UsbShortDescriptor(18, 8))) > 0)
+    test.assert(str.len(usberr.describe(UsbWrongDescriptorType(1, 2))) > 0)
+    test.assert(str.len(usberr.describe(UsbUnsupportedRequest(0x00, 0x07))) > 0)
+    test.assert(str.len(usberr.describe(UsbBadControlSequence(2))) > 0)
+    test.assert(str.len(usberr.describe(UsbLengthMismatch(18, 8))) > 0)
+    test.assert(str.len(usberr.describe(UsbStalled(0x81))) > 0)
+    test.assert(str.len(usberr.describe(UsbTimedOut(0x81))) > 0)
+    test.assert(str.len(usberr.describe(UsbDisconnected)) > 0)
+    test.assert(str.len(usberr.describe(UsbBackendRefused("resource busy"))) > 0)
+    test.assert(str.len(usberr.describe(UsbBadReportDescriptor(12))) > 0)
+    test.assert(str.len(usberr.describe(UsbBadLineCoding(0, 8))) > 0)
+
+@test
+fn test_a_message_names_the_value_that_decided_it() [io]
+    test.case("48 is the number a person needs to see, and a message without it sends them to a capture")
+    test.assert(str.contains(usberr.describe(UsbBadDescriptorField("bMaxPacketSize0", 48)), "48"))
+    test.assert(str.contains(usberr.describe(UsbStalled(129)), "129"))
+
+@test
+fn test_a_stall_on_a_data_endpoint_is_recoverable_and_a_disconnect_is_not() [io]
+    test.case("the one distinction a retry loop needs, and the one it most often gets wrong")
+    test.assert(usberr.is_recoverable(UsbStalled(0x81)))
+    test.assert(usberr.is_recoverable(UsbTimedOut(0x81)))
+    test.assert(usberr.is_recoverable(UsbDisconnected) == false)
+
+    test.case("a stall on endpoint 0 is the device saying not supported, and retrying it loops forever")
+    test.assert(usberr.is_recoverable(UsbStalled(0)) == false)
+
+    test.case("and a descriptor a device cannot build does not become buildable on a retry")
+    test.assert(usberr.is_recoverable(UsbBadDescriptorField("bMaxPacketSize0", 48)) == false)
+    test.assert(usberr.is_recoverable(UsbBadPacketSize(2, 2, 256)) == false)
+
+@test
+fn test_the_error_trait_and_the_free_function_agree() [io]
+    test.case("one sentence, reachable both ways — from a Result and from a value in hand")
+    test.assert_eq(UsbDisconnected.message(), usberr.describe(UsbDisconnected))

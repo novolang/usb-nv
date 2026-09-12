@@ -1,0 +1,159 @@
+// usbcdc_tests.nv — CDC-ACM: the line coding's seven bytes, the two
+// interfaces, and the association descriptor that binds them.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbcdc.<fn>`.
+//
+// THE VECTORS ARE THE CDC 1.2 SPECIFICATION'S TABLES.  The line coding
+// is table 17 — four bytes of dwDTERate, then bCharFormat, bParityType
+// and bDataBits — and 115200 8N1 is `00 C2 01 00 00 00 08`, a byte
+// sequence any USB capture of any serial adaptor shows.
+
+use std.test
+use usbcdc
+use usbdesc
+
+// Whether a check refused.  An optional is matched rather than
+// compared, so the two-line helper is what every assertion below
+// goes through.
+fn refused(e: ?UsbError) -> Bool
+    match e
+        Some(_) => true
+        None    => false
+
+fn acm() -> UsbCdcConfig
+    usbcdc.cdc_config(0, 1, 0x81, 0x82, 0x02, 64, 16)
+
+@test
+fn test_the_line_coding_is_seven_bytes_with_the_baud_rate_first() [io]
+    test.case("CDC 1.2 table 17: dwDTERate little-endian, then char format, parity and data bits")
+    let l = usbcdc.line_coding(115200, usbcdc.USB_CDC_STOP_1,
+                               usbcdc.USB_CDC_PARITY_NONE, 8)
+    test.assert_eq(usbcdc.line_coding_byte(l, 0), 0x00)
+    test.assert_eq(usbcdc.line_coding_byte(l, 1), 0xC2)
+    test.assert_eq(usbcdc.line_coding_byte(l, 2), 0x01)
+    test.assert_eq(usbcdc.line_coding_byte(l, 3), 0x00)
+    test.assert_eq(usbcdc.line_coding_byte(l, 4), 0)
+    test.assert_eq(usbcdc.line_coding_byte(l, 5), 0)
+    test.assert_eq(usbcdc.line_coding_byte(l, 6), 8)
+
+@test
+fn test_the_default_line_coding_is_what_a_host_assumes_anyway() [io]
+    test.case("115200 8N1 — the answer a device must give GET_LINE_CODING before a host has set one")
+    let l = usbcdc.default_line_coding()
+    test.assert_eq(usbcdc.baud(l), 115200)
+    test.assert_eq(usbcdc.data_bits(l), 8)
+    test.assert_eq(usbcdc.parity(l), usbcdc.USB_CDC_PARITY_NONE)
+    test.assert_eq(usbcdc.stop_bits(l), usbcdc.USB_CDC_STOP_1)
+
+@test
+fn test_a_baud_rate_of_zero_is_refused() [io]
+    test.case("a host can ask for it and a UART cannot be set to it")
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(0, 0, 0, 8))))
+
+@test
+fn test_the_data_bit_counts_the_specification_allows() [io]
+    test.case("5, 6, 7, 8 and 16, and nothing between 8 and 16")
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(9600, 0, 0, 5))) == false)
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(9600, 0, 0, 8))) == false)
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(9600, 0, 0, 16))) == false)
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(9600, 0, 0, 9))))
+    test.assert(refused(usbcdc.check_line_coding(usbcdc.line_coding(9600, 0, 0, 0))))
+
+@test
+fn test_one_and_a_half_stop_bits_only_exist_on_a_five_bit_format() [io]
+    test.case("the one combination the specification rules out, and a UART that is asked for it does something else")
+    test.assert(refused(usbcdc.check_line_coding(
+        usbcdc.line_coding(9600, usbcdc.USB_CDC_STOP_1_5, 0, 5))) == false)
+    test.assert(refused(usbcdc.check_line_coding(
+        usbcdc.line_coding(9600, usbcdc.USB_CDC_STOP_1_5, 0, 8))))
+
+@test
+fn test_dtr_and_rts_are_read_out_of_one_wvalue() [io]
+    test.case("SET_CONTROL_LINE_STATE carries both in wValue, and DTR is what a terminal program sets when it opens the port")
+    test.assert(usbcdc.cdc_dtr(usbcdc.USB_CDC_DTR))
+    test.assert(usbcdc.cdc_rts(usbcdc.USB_CDC_DTR) == false)
+    test.assert(usbcdc.cdc_rts(usbcdc.USB_CDC_RTS))
+    test.assert(usbcdc.cdc_dtr(usbcdc.USB_CDC_DTR + usbcdc.USB_CDC_RTS))
+    test.assert(usbcdc.cdc_rts(usbcdc.USB_CDC_DTR + usbcdc.USB_CDC_RTS))
+    test.assert(usbcdc.cdc_dtr(0) == false)
+
+@test
+fn test_an_indefinite_break_is_not_sixty_five_thousand_milliseconds() [io]
+    test.case("0xFFFF means hold the break until told otherwise, which is a different instruction")
+    test.assert(usbcdc.break_is_indefinite(0xFFFF))
+    test.assert(usbcdc.break_is_indefinite(100) == false)
+    test.assert_eq(usbcdc.break_ms(100), 100)
+
+@test
+fn test_the_data_interface_must_follow_the_communications_one() [io]
+    test.case("the union functional descriptor names both, and a host rejects a pair that is not adjacent")
+    test.assert(refused(usbcdc.check_cdc_config(acm(), 2)) == false)
+
+    let split = usbcdc.cdc_config(0, 3, 0x81, 0x82, 0x02, 64, 16)
+    test.assert(refused(usbcdc.check_cdc_config(split, 2)))
+
+@test
+fn test_an_out_endpoint_with_the_in_bit_set_is_refused() [io]
+    test.case("the direction bit is the one byte in a CDC configuration nothing else checks")
+    let wrong = usbcdc.cdc_config(0, 1, 0x81, 0x82, 0x82, 64, 16)
+    test.assert(refused(usbcdc.check_cdc_config(wrong, 2)))
+
+@test
+fn test_a_full_speed_bulk_endpoint_of_512_is_refused() [io]
+    test.case("512 is the high-speed size, and a full-speed device that declares it enumerates and moves nothing")
+    let big = usbcdc.cdc_config(0, 1, 0x81, 0x82, 0x02, 512, 16)
+    test.assert(refused(usbcdc.check_cdc_config(big, 2)))
+    test.assert(refused(usbcdc.check_cdc_config(big, 3)) == false)
+
+@test
+fn test_the_association_descriptor_covers_both_interfaces() [io]
+    test.case("without it a host may bind a driver to the control interface alone, and the port opens and moves no bytes")
+    let a = usbcdc.cdc_iad(acm())
+    test.assert_eq(usbdesc.iad_first_interface(a), 0)
+    test.assert_eq(usbdesc.iad_interface_count(a), 2)
+
+@test
+fn test_the_two_interfaces_carry_different_class_codes() [io]
+    test.case("0x02 on the control interface and 0x0A on the data one — the commonest CDC mistake")
+    let comm = usbcdc.cdc_comm_interface_desc(acm())
+    let data = usbcdc.cdc_data_interface_desc(acm())
+    test.assert_eq(usbdesc.interface_class(comm), usbdesc.USB_CLASS_CDC)
+    test.assert_eq(usbdesc.interface_sub_class(comm), usbcdc.USB_CDC_SUBCLASS_ACM)
+    test.assert_eq(usbdesc.interface_class(data), usbdesc.USB_CLASS_CDC_DATA)
+
+    test.case("and the endpoint counts differ: one notification, two bulk")
+    test.assert_eq(usbdesc.num_endpoints(comm), 1)
+    test.assert_eq(usbdesc.num_endpoints(data), 2)
+
+@test
+fn test_the_functional_descriptors_are_nineteen_bytes_in_a_fixed_order() [io]
+    test.case("header 5, call management 5, ACM 4, union 5 — and a host reads them in that order")
+    test.assert_eq(usbcdc.USB_CDC_FUNCTIONAL_LEN, 19)
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 0), 5)
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 1), usbcdc.USB_CDC_CS_INTERFACE)
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 2), usbcdc.USB_CDC_FD_HEADER)
+
+    test.case("the union descriptor's last two bytes are the two interface numbers")
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 16), usbcdc.USB_CDC_FD_UNION)
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 17), 0)
+    test.assert_eq(usbcdc.cdc_functional_byte(acm(), 18), 1)
+
+@test
+fn test_the_total_length_is_the_number_a_hand_written_configuration_gets_wrong() [io]
+    test.case("8 association + 9 + 19 + 7 + 9 + 7 + 7 = 66 bytes a CDC function adds to wTotalLength")
+    test.assert_eq(usbcdc.cdc_total_len(), 66)
+
+@test
+fn test_the_serial_state_notification_is_ten_bytes() [io]
+    test.case("eight of notification header and two of state, and bNotification is 0x20")
+    test.assert_eq(usbcdc.USB_CDC_SERIAL_STATE_LEN, 10)
+    test.assert_eq(usbcdc.serial_state_byte(0, usbcdc.USB_CDC_SERIAL_DCD, 0), 0xA1)
+    test.assert_eq(usbcdc.serial_state_byte(0, usbcdc.USB_CDC_SERIAL_DCD, 1),
+                   usbcdc.USB_CDC_NOTIFY_SERIAL_STATE)
+    test.assert_eq(usbcdc.serial_state_byte(0, usbcdc.USB_CDC_SERIAL_DCD, 8),
+                   usbcdc.USB_CDC_SERIAL_DCD)
+
+@test
+fn test_the_line_coding_has_a_name_a_log_can_print() [io]
+    test.assert_eq(usbcdc.line_coding_name(usbcdc.default_line_coding()), "115200 8N1")

@@ -1,0 +1,287 @@
+// usbctl_tests.nv — the control-transfer state machine: the deferred
+// SET_ADDRESS, the truncation rule, the zero-length packet, and the
+// four states a request moves the device between.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbctl.<fn>`.
+//
+// THE VECTORS ARE USB 2.0 § 9.4 AND `usb-device`'s OWN BEHAVIOUR.
+// Every assertion below is a sentence of the specification turned into
+// a comparison — "the device does not change its address until the
+// status stage completes" is § 9.4.6, and the two assertions about
+// `step_deferred` and `step_action` are that sentence.  Where
+// `usb-device` made a choice the specification left open (what a
+// device does with a SET_CONFIGURATION it does not have), the test
+// says which behaviour this package copies and why.
+
+use std.test
+use usbctl
+
+fn fresh() -> UsbCtl
+    usbctl.control(64)
+
+@test
+fn test_a_device_starts_in_the_default_state_on_address_zero() [io]
+    test.case("reset seen, no address adopted, no configuration selected")
+    let c = fresh()
+    test.assert_eq(usbctl.state(c), usbctl.USB_STATE_DEFAULT)
+    test.assert_eq(usbctl.address(c), 0)
+    test.assert_eq(usbctl.configuration(c), 0)
+    test.assert_eq(usbctl.max_packet0(c), 64)
+    test.assert(usbctl.remote_wakeup(c) == false)
+
+@test
+fn test_set_address_is_adopted_after_the_status_stage_and_not_before() [io]
+    test.case("USB 2.0 section 9.4.6 — the whole reason this machine answers two actions")
+    let c = fresh()
+    let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, 7, 0, 0)
+    let st = usbctl.step(c, s, 0)
+
+    test.case("the immediate action is the status stage, sent from the OLD address")
+    test.assert_eq(usbctl.step_action(st), usbctl.USB_ACT_STATUS_IN)
+
+    test.case("and the address register write is deferred, with the address as its argument")
+    test.assert_eq(usbctl.step_deferred(st), usbctl.USB_ACT_SET_ADDRESS)
+    test.assert_eq(usbctl.step_arg(st), 7)
+
+    test.case("a stack that performed both at once would answer from an address it is not listening on")
+    test.assert(usbctl.step_action(st) != usbctl.USB_ACT_SET_ADDRESS)
+
+    test.case("after the status stage the device is in the address state")
+    let after = usbctl.advance(c, s, st)
+    test.assert_eq(usbctl.address(after), 7)
+    test.assert_eq(usbctl.state(after), usbctl.USB_STATE_ADDRESS)
+
+@test
+fn test_no_other_request_defers_anything() [io]
+    test.case("SET_ADDRESS is the only deferred action, so every other step's deferred is NONE")
+    let c = fresh()
+    let gd = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 18)
+    test.assert_eq(usbctl.step_deferred(usbctl.step(c, gd, 18)), usbctl.USB_ACT_NONE)
+
+    let sc = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 1, 0, 0)
+    test.assert_eq(usbctl.step_deferred(usbctl.step(c, sc, 0)), usbctl.USB_ACT_NONE)
+
+@test
+fn test_a_data_stage_is_truncated_to_wlength() [io]
+    test.case("a host that asked for 8 bytes of an 18-byte descriptor gets 8 — the first enumeration step every host takes")
+    let c = fresh()
+    let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 8)
+    let st = usbctl.step(c, s, 18)
+    test.assert_eq(usbctl.step_action(st), usbctl.USB_ACT_DATA_IN)
+    test.assert_eq(usbctl.step_len(st), 8)
+
+    test.case("and the truncated transfer needs no zero-length packet, because it filled wLength exactly")
+    test.assert(usbctl.step_needs_zlp(st) == false)
+
+@test
+fn test_a_short_answer_that_is_a_whole_packet_needs_a_zero_length_packet() [io]
+    test.case("64 bytes offered against a wLength of 255 on a 64-byte endpoint: the host waits forever without the ZLP")
+    let c = fresh()
+    let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0200, 0, 255)
+    test.assert(usbctl.step_needs_zlp(usbctl.step(c, s, 64)))
+
+    test.case("128 is two whole packets and needs one too")
+    test.assert(usbctl.step_needs_zlp(usbctl.step(c, s, 128)))
+
+    test.case("67 is not a whole multiple, so its last short packet IS the end of the transfer")
+    test.assert(usbctl.step_needs_zlp(usbctl.step(c, s, 67)) == false)
+
+    test.case("and a descriptor that filled wLength exactly is over whatever its length")
+    let exact = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0200, 0, 64)
+    test.assert(usbctl.step_needs_zlp(usbctl.step(c, exact, 64)) == false)
+
+@test
+fn test_get_descriptor_names_which_bytes_to_send() [io]
+    test.case("a @value struct cannot own a buffer, so the step names the source and the caller holds the bytes")
+    let c = fresh()
+    let dev = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 18)
+    test.assert_eq(usbctl.step_source(usbctl.step(c, dev, 18)), usbctl.USB_SRC_DEVICE_DESC)
+
+    let cfg = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0200, 0, 255)
+    test.assert_eq(usbctl.step_source(usbctl.step(c, cfg, 67)), usbctl.USB_SRC_CONFIG_DESC)
+
+    let str_desc = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0302, 0x0409, 255)
+    let st = usbctl.step(c, str_desc, 10)
+    test.assert_eq(usbctl.step_source(st), usbctl.USB_SRC_STRING_DESC)
+    test.case("and the index rides in the argument, because one source serves every string")
+    test.assert_eq(usbctl.step_arg(st), 2)
+
+@test
+fn test_the_descriptor_type_and_index_are_the_two_halves_of_wvalue() [io]
+    test.case("high byte is the type, low byte is the index — the one field of a setup packet that is two fields")
+    let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0302, 0x0409, 255)
+    test.assert_eq(usbctl.setup_descriptor_type(s), 0x03)
+    test.assert_eq(usbctl.setup_descriptor_index(s), 0x02)
+    test.assert_eq(usbctl.setup_index(s), 0x0409)
+
+@test
+fn test_set_configuration_zero_unconfigures_rather_than_selecting_configuration_zero() [io]
+    test.case("0 is not a configuration value: it is the instruction to disable every endpoint but 0")
+    let c = fresh()
+    let sc = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 1, 0, 0)
+    let configured = usbctl.advance(c, sc, usbctl.step(c, sc, 0))
+    test.assert_eq(usbctl.state(configured), usbctl.USB_STATE_CONFIGURED)
+    test.assert_eq(usbctl.configuration(configured), 1)
+
+    let sc0 = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 0, 0, 0)
+    let st0 = usbctl.step(configured, sc0, 0)
+    test.assert_eq(usbctl.step_action(st0), usbctl.USB_ACT_UNCONFIGURE)
+
+    let back = usbctl.advance(configured, sc0, st0)
+    test.assert_eq(usbctl.state(back), usbctl.USB_STATE_ADDRESS)
+    test.assert_eq(usbctl.configuration(back), 0)
+    test.case("and the address survives, because unconfiguring is not a reset")
+    test.assert_eq(usbctl.address(back), usbctl.address(configured))
+
+@test
+fn test_an_unimplemented_request_is_a_stall_and_not_a_silence() [io]
+    test.case("a stall is the specification's way of saying not supported, and a host probes for optional requests on purpose")
+    let c = fresh()
+    let sd = usbctl.setup(0x00, usbctl.USB_REQ_SET_DESCRIPTOR, 0, 0, 0)
+    test.assert_eq(usbctl.step_action(usbctl.step(c, sd, 0)), usbctl.USB_ACT_STALL)
+
+@test
+fn test_a_class_or_vendor_request_is_handed_on_rather_than_stalled() [io]
+    test.case("CDC's SET_LINE_CODING arrives as a class request and this machine does not own it")
+    let c = fresh()
+    let cls = usbctl.setup(0x21, 0x20, 0, 0, 7)
+    test.assert(usbctl.is_standard(cls) == false)
+    test.assert_eq(usbctl.setup_kind(cls), usbctl.USB_REQ_TYPE_CLASS)
+    test.assert_eq(usbctl.setup_recipient(cls), usbctl.USB_RECIP_INTERFACE)
+    test.assert_eq(usbctl.step_action(usbctl.step(c, cls, 0)), usbctl.USB_ACT_CLASS_REQUEST)
+
+    test.case("and a vendor request — which is how WebUSB and MS OS 2.0 arrive — the same way")
+    let vend = usbctl.setup(0xC0, 0x22, 0, 7, 64)
+    test.assert_eq(usbctl.setup_kind(vend), usbctl.USB_REQ_TYPE_VENDOR)
+    test.assert_eq(usbctl.step_action(usbctl.step(c, vend, 0)), usbctl.USB_ACT_CLASS_REQUEST)
+
+@test
+fn test_clear_feature_endpoint_halt_resets_the_toggle_too() [io]
+    test.case("the half of the request that is forgotten: an endpoint resumed on the wrong toggle has every packet discarded")
+    let c = fresh()
+    let s = usbctl.setup(0x02, usbctl.USB_REQ_CLEAR_FEATURE,
+                         usbctl.USB_FEATURE_ENDPOINT_HALT, 0x81, 0)
+    let st = usbctl.step(c, s, 0)
+    test.assert_eq(usbctl.step_action(st), usbctl.USB_ACT_CLEAR_HALT)
+    test.assert_eq(usbctl.step_arg(st), 0x81)
+
+@test
+fn test_get_status_answers_two_bytes_without_a_buffer() [io]
+    test.case("self-powered in bit 0 and remote wakeup in bit 1, carried in the step's argument")
+    let c = usbctl.with_self_powered(fresh(), true)
+    test.assert_eq(usbctl.status_word(c), 1)
+
+    let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_STATUS, 0, 0, 2)
+    let st = usbctl.step(c, s, 0)
+    test.assert_eq(usbctl.step_source(st), usbctl.USB_SRC_STATUS_WORD)
+    test.assert_eq(usbctl.step_len(st), 2)
+    test.assert_eq(usbctl.step_arg(st), 1)
+
+@test
+fn test_set_feature_remote_wakeup_is_remembered() [io]
+    test.case("a host enables it and GET_STATUS has to say so afterwards")
+    let c = fresh()
+    let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_FEATURE,
+                         usbctl.USB_FEATURE_DEVICE_REMOTE_WAKEUP, 0, 0)
+    let after = usbctl.advance(c, s, usbctl.step(c, s, 0))
+    test.assert(usbctl.remote_wakeup(after))
+    test.assert_eq(usbctl.status_word(after), 2)
+
+@test
+fn test_a_bus_reset_forgets_the_address_and_keeps_the_packet_size() [io]
+    test.case("a reset is not a power cycle: what the device was BUILT with survives it")
+    let c = fresh()
+    let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, 9, 0, 0)
+    let addressed = usbctl.with_self_powered(usbctl.advance(c, s, usbctl.step(c, s, 0)), true)
+    test.assert_eq(usbctl.address(addressed), 9)
+
+    let after = usbctl.reset(addressed)
+    test.assert_eq(usbctl.address(after), 0)
+    test.assert_eq(usbctl.state(after), usbctl.USB_STATE_DEFAULT)
+    test.assert_eq(usbctl.configuration(after), 0)
+    test.assert(usbctl.remote_wakeup(after) == false)
+    test.assert_eq(usbctl.max_packet0(after), 64)
+    test.assert(usbctl.self_powered(after))
+
+@test
+fn test_the_setup_packet_is_eight_little_endian_bytes() [io]
+    test.case("USB 2.0 table 9-2: bmRequestType, bRequest, wValue, wIndex, wLength")
+    let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 0x0040)
+    test.assert_eq(usbctl.setup_byte(s, 0), 0x80)
+    test.assert_eq(usbctl.setup_byte(s, 1), 0x06)
+    test.assert_eq(usbctl.setup_byte(s, 2), 0x00)
+    test.assert_eq(usbctl.setup_byte(s, 3), 0x01)
+    test.assert_eq(usbctl.setup_byte(s, 4), 0x00)
+    test.assert_eq(usbctl.setup_byte(s, 5), 0x00)
+    test.assert_eq(usbctl.setup_byte(s, 6), 0x40)
+    test.assert_eq(usbctl.setup_byte(s, 7), 0x00)
+
+@test
+fn test_the_direction_bit_says_which_way_the_data_stage_goes() [io]
+    test.assert(usbctl.setup_is_in(usbctl.setup(0x80, 0x06, 0x0100, 0, 18)))
+    test.assert(usbctl.setup_is_in(usbctl.setup(0x00, 0x05, 7, 0, 0)) == false)
+
+@test
+fn test_a_request_with_no_data_stage_answers_the_status_stage() [io]
+    test.case("wLength 0 means there is no data stage at all, and a machine that returned DATA_IN with length 0 would send a packet the host is not waiting for")
+    let c = fresh()
+    let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 1, 0, 0)
+    let st = usbctl.step(c, s, 0)
+    test.assert_eq(usbctl.step_len(st), 0)
+    test.assert(usbctl.step_action(st) != usbctl.USB_ACT_DATA_IN)
+
+@test
+fn test_the_action_and_state_codes_have_names() [io]
+    test.case("a log of a failed enumeration is unreadable as integers")
+    test.assert(str.len(usbctl.action_name(usbctl.USB_ACT_SET_ADDRESS)) > 0)
+    test.assert(str.len(usbctl.state_name(usbctl.USB_STATE_CONFIGURED)) > 0)
+
+@test
+fn test_the_five_setup_fields_read_back_and_decode_round_trips() [io]
+    test.case("five distinct numbers, so a reader wired to its neighbour's slot is visible here")
+    let s = usbctl.setup(0xA1, 0x01, 0x0102, 0x0003, 0x0040)
+    test.assert_eq(usbctl.setup_request_type(s), 0xA1)
+    test.assert_eq(usbctl.setup_request(s), 0x01)
+    test.assert_eq(usbctl.setup_value(s), 0x0102)
+    test.assert_eq(usbctl.setup_index(s), 0x0003)
+    test.assert_eq(usbctl.setup_length(s), 0x0040)
+
+    test.case("and decoding the eight bytes back gives the same five")
+    let wire: [u8] = [0xA1 as u8, 0x01 as u8, 0x02 as u8, 0x01 as u8,
+                      0x03 as u8, 0x00 as u8, 0x40 as u8, 0x00 as u8]
+    let back = usbctl.setup_decode(wire, 0)
+    test.assert_eq(usbctl.setup_request_type(back), 0xA1)
+    test.assert_eq(usbctl.setup_value(back), 0x0102)
+    test.assert_eq(usbctl.setup_length(back), 0x0040)
+
+@test
+fn test_a_setup_packet_that_cannot_be_acted_on_is_refused() [io]
+    test.case("wLength above 4096 is not a transfer any control endpoint completes, and a device that tries stalls halfway through")
+    match usbctl.check_setup(usbctl.setup(0x80, 0x06, 0x0100, 0, 0xFFFF))
+        Some(_) => test.assert(true)
+        None    => test.assert(false)
+
+    test.case("and an ordinary one has nothing to say")
+    match usbctl.check_setup(usbctl.setup(0x80, 0x06, 0x0100, 0, 18))
+        None    => test.assert(true)
+        Some(_) => test.assert(false)
+
+@test
+fn test_set_interface_is_the_one_action_with_two_arguments() [io]
+    test.case("an interface number and an alternate setting, which is why the step carries a second argument at all")
+    let c = fresh()
+    let s = usbctl.setup(0x01, usbctl.USB_REQ_SET_INTERFACE, 2, 1, 0)
+    let st = usbctl.step(c, s, 0)
+    test.assert_eq(usbctl.step_action(st), usbctl.USB_ACT_SET_INTERFACE)
+    test.assert_eq(usbctl.step_arg(st), 1)
+    test.assert_eq(usbctl.step_arg2(st), 2)
+
+@test
+fn test_a_step_names_the_state_the_transfer_moves_to() [io]
+    test.case("a driver stores it after the status stage, and advance is written over it")
+    let c = fresh()
+    let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, 7, 0, 0)
+    let st = usbctl.step(c, s, 0)
+    test.assert_eq(usbctl.step_next_state(st), usbctl.USB_STATE_ADDRESS)
+    test.assert_eq(usbctl.state(usbctl.advance(c, s, st)), usbctl.step_next_state(st))

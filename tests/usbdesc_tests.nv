@@ -1,0 +1,196 @@
+// usbdesc_tests.nv — the standard descriptors: the bytes, the two
+// fields that are not fields, and the packet sizes the specification
+// allows.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbdesc.<fn>`, because every body under
+// `src/` is a `todo()`.  Assertions against published CONSTANTS pass,
+// because a constant is not a stub.
+//
+// THE VECTORS ARE THE SPECIFICATION'S OWN TABLES.  USB 2.0 § 9.6 gives
+// every descriptor's layout field by field with its offset and its
+// width, so the byte-level assertions below are transcriptions rather
+// than guesses — the device descriptor's idVendor is at offset 8,
+// little-endian, and that is a fact with an address in a published
+// document.  Where a number is a convention rather than a rule
+// (0x1209 as the pid.codes vendor identifier) the test uses it as data
+// and asserts nothing about it.
+
+use std.test
+use usbdesc
+
+// Whether a check refused.  An optional is matched rather than
+// compared, so the two-line helper is what every assertion below
+// goes through.
+fn refused(e: ?UsbError) -> Bool
+    match e
+        Some(_) => true
+        None    => false
+
+fn nominal_device() -> UsbDeviceDesc
+    usbdesc.device_desc(0x0200, usbdesc.USB_CLASS_PER_INTERFACE, 0, 0,
+                        64, 0x1209, 0x0001, 0x0100, 1, 2, 3, 1)
+
+@test
+fn test_the_descriptor_lengths_are_the_specifications_and_not_a_field() [io]
+    test.case("USB 2.0 tables 9-8 to 9-13 fix every standard descriptor's bLength")
+    test.assert_eq(usbdesc.USB_DEVICE_DESC_LEN, 18)
+    test.assert_eq(usbdesc.USB_CONFIG_DESC_LEN, 9)
+    test.assert_eq(usbdesc.USB_INTERFACE_DESC_LEN, 9)
+    test.assert_eq(usbdesc.USB_ENDPOINT_DESC_LEN, 7)
+    test.assert_eq(usbdesc.USB_IAD_LEN, 8)
+
+@test
+fn test_the_first_two_bytes_of_a_descriptor_are_its_identity() [io]
+    test.case("byte 0 is bLength and byte 1 is bDescriptorType, neither of them a field a caller can get wrong")
+    let d = nominal_device()
+    test.assert_eq(usbdesc.device_desc_byte(d, 0), 18)
+    test.assert_eq(usbdesc.device_desc_byte(d, 1), usbdesc.USB_DESC_DEVICE)
+
+    let c = usbdesc.config_desc(67, 2, 1, 0, 0x80, 50)
+    test.assert_eq(usbdesc.config_desc_byte(c, 0), 9)
+    test.assert_eq(usbdesc.config_desc_byte(c, 1), usbdesc.USB_DESC_CONFIGURATION)
+
+@test
+fn test_the_device_descriptor_is_little_endian_at_the_offsets_the_spec_names() [io]
+    test.case("bcdUSB at 2, idVendor at 8, idProduct at 10, bcdDevice at 12 — all two bytes, low byte first")
+    let d = nominal_device()
+    test.assert_eq(usbdesc.device_desc_byte(d, 2), 0x00)
+    test.assert_eq(usbdesc.device_desc_byte(d, 3), 0x02)
+    test.assert_eq(usbdesc.device_desc_byte(d, 8), 0x09)
+    test.assert_eq(usbdesc.device_desc_byte(d, 9), 0x12)
+    test.assert_eq(usbdesc.device_desc_byte(d, 10), 0x01)
+    test.assert_eq(usbdesc.device_desc_byte(d, 11), 0x00)
+
+    test.case("bMaxPacketSize0 at 7 is one byte")
+    test.assert_eq(usbdesc.device_desc_byte(d, 7), 64)
+
+    test.case("and past the end is 0 rather than a fault, so a host that over-reads gets padding")
+    test.assert_eq(usbdesc.device_desc_byte(d, 18), 0)
+
+@test
+fn test_max_power_is_in_two_milliamp_units() [io]
+    test.case("the unit is the field's most reliable source of error: 250 units is 500 mA")
+    let c = usbdesc.config_desc(67, 2, 1, 0, 0x80, 250)
+    test.assert_eq(usbdesc.max_power_units(c), 250)
+    test.assert_eq(usbdesc.max_power_ma(c), 500)
+
+    test.case("a configuration that writes 500 there is asking for an ampere")
+    let greedy = usbdesc.config_desc(67, 2, 1, 0, 0x80, 500)
+    test.assert_eq(usbdesc.max_power_ma(greedy), 1000)
+
+@test
+fn test_in_and_out_are_named_from_the_host() [io]
+    test.case("an IN endpoint is one the DEVICE writes, and the bit is 0x80")
+    test.assert_eq(usbdesc.endpoint_in(1), 0x81)
+    test.assert_eq(usbdesc.endpoint_out(1), 0x01)
+    test.assert(usbdesc.endpoint_is_in(usbdesc.endpoint_in(1)))
+    test.assert(usbdesc.endpoint_is_in(usbdesc.endpoint_out(1)) == false)
+
+    test.case("and the number is the low four bits of either")
+    test.assert_eq(usbdesc.endpoint_number(usbdesc.endpoint_in(3)), 3)
+    test.assert_eq(usbdesc.endpoint_number(usbdesc.endpoint_out(3)), 3)
+
+@test
+fn test_the_packet_sizes_the_specification_allows() [io]
+    test.case("USB 2.0 table 9-13: a full-speed bulk endpoint is 8, 16, 32 or 64 and nothing else")
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 8))
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 64))
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 24) == false)
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 256) == false)
+
+    test.case("a high-speed bulk endpoint is exactly 512")
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_HIGH, 512))
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_HIGH, 64) == false)
+
+    test.case("a full-speed interrupt endpoint is at most 64, and any size up to it")
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_INTERRUPT, usbdesc.USB_SPEED_FULL, 10))
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_INTERRUPT, usbdesc.USB_SPEED_FULL, 65) == false)
+
+    test.case("a low-speed interrupt endpoint is at most 8")
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_INTERRUPT, usbdesc.USB_SPEED_LOW, 8))
+    test.assert(usbdesc.max_packet_ok(usbdesc.USB_XFER_INTERRUPT, usbdesc.USB_SPEED_LOW, 16) == false)
+
+@test
+fn test_a_control_endpoint_size_outside_the_four_is_refused() [io]
+    test.case("bMaxPacketSize0 is 8, 16, 32 or 64, and a device that says 48 does not enumerate")
+    let bad = usbdesc.device_desc(0x0200, 0, 0, 0, 48, 0x1209, 1, 0x0100, 0, 0, 0, 1)
+    test.assert(usbdesc.device_desc_ok(bad) == false)
+    test.assert(refused(usbdesc.check_device_desc(bad)))
+
+    test.case("and a good one has nothing to say")
+    test.assert(usbdesc.device_desc_ok(nominal_device()))
+    test.assert(refused(usbdesc.check_device_desc(nominal_device())) == false)
+
+@test
+fn test_a_configuration_value_of_zero_is_not_a_configuration() [io]
+    test.case("0 means unconfigured, so it cannot also name a configuration")
+    let c = usbdesc.config_desc(67, 1, 0, 0, 0x80, 50)
+    test.assert(refused(usbdesc.check_config_desc(c)))
+
+@test
+fn test_the_reserved_attribute_bit_must_be_set() [io]
+    test.case("bmAttributes bit 7 is reserved and set: some hosts refuse a configuration without it and others ignore it")
+    let c = usbdesc.config_desc(67, 1, 1, 0, 0x00, 50)
+    test.assert(refused(usbdesc.check_config_desc(c)))
+
+@test
+fn test_self_powered_and_remote_wakeup_are_read_off_the_attributes() [io]
+    let c = usbdesc.config_desc(67, 1, 1, 0,
+                                usbdesc.USB_CONFIG_ATTR_RESERVED
+                                + usbdesc.USB_CONFIG_ATTR_SELF_POWERED
+                                + usbdesc.USB_CONFIG_ATTR_REMOTE_WAKEUP,
+                                0)
+    test.assert(usbdesc.is_self_powered(c))
+    test.assert(usbdesc.wants_remote_wakeup(c))
+
+    let bus = usbdesc.config_desc(67, 1, 1, 0, usbdesc.USB_CONFIG_ATTR_RESERVED, 50)
+    test.assert(usbdesc.is_self_powered(bus) == false)
+    test.assert(usbdesc.wants_remote_wakeup(bus) == false)
+
+@test
+fn test_the_endpoint_descriptor_carries_the_transfer_type_in_two_bits() [io]
+    let e = usbdesc.endpoint_desc(usbdesc.endpoint_in(2), usbdesc.USB_XFER_BULK, 64, 0)
+    test.assert_eq(usbdesc.transfer_type(e), usbdesc.USB_XFER_BULK)
+    test.assert_eq(usbdesc.endpoint_desc_byte(e, 0), 7)
+    test.assert_eq(usbdesc.endpoint_desc_byte(e, 1), usbdesc.USB_DESC_ENDPOINT)
+    test.assert_eq(usbdesc.endpoint_desc_byte(e, 2), 0x82)
+
+    test.case("wMaxPacketSize at offset 4 is two bytes, low byte first")
+    test.assert_eq(usbdesc.endpoint_desc_byte(e, 4), 64)
+    test.assert_eq(usbdesc.endpoint_desc_byte(e, 5), 0)
+
+@test
+fn test_the_cdc_data_class_is_not_the_cdc_control_class() [io]
+    test.case("0x02 and 0x0A, and a device that uses one for both is the commonest CDC fault")
+    test.assert_eq(usbdesc.USB_CLASS_CDC, 0x02)
+    test.assert_eq(usbdesc.USB_CLASS_CDC_DATA, 0x0A)
+
+@test
+fn test_a_string_descriptor_is_two_bytes_plus_utf16() [io]
+    test.case("four ASCII characters are eight bytes of UTF-16LE plus two of header")
+    test.assert_eq(usbdesc.string_desc_len("novo"), 10)
+    test.assert_eq(usbdesc.string_desc_byte("novo", 0), 10)
+    test.assert_eq(usbdesc.string_desc_byte("novo", 1), usbdesc.USB_DESC_STRING)
+    test.assert_eq(usbdesc.string_desc_byte("novo", 2), 0x6E)
+    test.assert_eq(usbdesc.string_desc_byte("novo", 3), 0x00)
+
+    test.case("a character outside the basic multilingual plane is a surrogate PAIR, so the length is not twice the character count")
+    test.assert_eq(usbdesc.string_desc_len("\u{1F600}"), 6)
+
+@test
+fn test_string_descriptor_zero_is_a_language_list_and_not_text() [io]
+    test.case("one language is four bytes: length, type, and the identifier little-endian")
+    test.assert_eq(usbdesc.lang_desc_len(1), 4)
+    test.assert_eq(usbdesc.lang_desc_byte(usbdesc.USB_LANG_EN_US, 0), 4)
+    test.assert_eq(usbdesc.lang_desc_byte(usbdesc.USB_LANG_EN_US, 1), usbdesc.USB_DESC_STRING)
+    test.assert_eq(usbdesc.lang_desc_byte(usbdesc.USB_LANG_EN_US, 2), 0x09)
+    test.assert_eq(usbdesc.lang_desc_byte(usbdesc.USB_LANG_EN_US, 3), 0x04)
+
+@test
+fn test_an_interface_association_descriptor_binds_a_run_of_interfaces() [io]
+    let a = usbdesc.iad(0, 2, usbdesc.USB_CLASS_CDC, 0x02, 0x01, 0)
+    test.assert_eq(usbdesc.iad_first_interface(a), 0)
+    test.assert_eq(usbdesc.iad_interface_count(a), 2)
+    test.assert_eq(usbdesc.iad_byte(a, 0), 8)
+    test.assert_eq(usbdesc.iad_byte(a, 1), usbdesc.USB_DESC_INTERFACE_ASSOCIATION)

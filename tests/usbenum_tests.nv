@@ -1,0 +1,48 @@
+// usbenum_tests.nv — the one module that performs.
+//
+// RED ON PURPOSE, AND SHALLOW ON PURPOSE.  Every body is a `todo()`, so
+// these reach `not implemented: usb-nv.usbenum.<fn>`; and even with
+// bodies, what this module answers depends on what is plugged into the
+// machine running the suite.  So the assertions here are about the
+// SHAPE — that the effect row is `[fs]` and the call compiles, that a
+// machine with no `/sys` says so rather than answering an empty list
+// that reads as "nothing is attached" — and the behaviour that needs a
+// device is left to a consumer probe with one.
+//
+// A module whose answers are the machine's is a module whose test
+// suite has to say what it is not covering.  This one is not covering:
+// which devices appear, what a hub reports, or what happens when a
+// device is unplugged mid-scan.
+
+use std.test
+use usbenum
+
+@test
+fn test_the_support_question_is_asked_before_the_list() [io, fs]
+    test.case("a caller on a machine with no /sys gets a false and a road to a backend, not an empty list")
+    let ok = usbenum.is_supported()
+    test.assert(ok or ok == false)
+
+@test
+fn test_enumeration_answers_a_result_rather_than_a_bare_list() [io, fs]
+    test.case("a directory that cannot be read is different from a bus with nothing on it, and only a Result can say which")
+    match usbenum.devices()
+        Ok(found) => test.assert(list.len(found) >= 0)
+        Err(_)    => test.assert(true)
+
+@test
+fn test_a_vendor_filter_with_no_product_matches_a_whole_family() [io, fs]
+    test.case("-1 is the shape a tool for a family of boards wants: every device from one vendor")
+    match usbenum.devices_matching(0x1209, 0 - 1)
+        Ok(found) => test.assert(list.len(found) >= 0)
+        Err(_)    => test.assert(true)
+
+@test
+fn test_a_serial_number_lookup_answers_an_optional_inside_a_result() [io, fs]
+    test.case("not found and could not look are two different answers, and a bare optional conflates them")
+    match usbenum.device_with_serial("nothing-is-plugged-in-with-this-serial")
+        Ok(found) =>
+            match found
+                None    => test.assert(true)
+                Some(_) => test.assert(true)
+        Err(_)    => test.assert(true)

@@ -1,0 +1,63 @@
+[package]
+name        = "usb-nv"
+version     = "0.0.1"
+description = "The USB 2.0 device side with no peripheral attached: the standard descriptors as values that answer their own wire bytes, the control-transfer state machine with the standard requests and the SET_ADDRESS ordering the specification requires, CDC-ACM and HID as classes over one device model, and a host-side enumeration and transfer surface beside them.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`, with one host module named below.
+#
+# The must-have plan placed this row at `host` because it saw the
+# driver half.  The SUBJECT is the other half: a USB device stack is
+# what a microcontroller runs, and descriptors, the control-transfer
+# state machine, CDC-ACM and HID are all arithmetic over bytes the
+# caller already holds.  So the narrow layer is declared and the wide
+# module is named, which is the shape `docs/publishing.md` § A package
+# with a core and a host half describes — and it is what makes the
+# device claim in `tests/embedded_probe.nv` a thing the audit BUILDS
+# rather than a sentence in a README.
+#
+# `usbxfer` stays `core` even though it is the host's view of a bus,
+# because every row in it is an effect PARAMETER: the driving functions
+# are generic over `UsbHostBackend[e]` and cost whatever the backend
+# costs.  A package that declares a transfer surface has not performed
+# a transfer.
+layer       = "core"
+
+# `usbenum` is the one module that performs: it reads the kernel's own
+# description of the bus out of `/sys/bus/usb/devices/`, which is
+# `[fs]`.  Enumeration is the half of the host story that needs no C
+# library at all, and separating it from the transfer surface is what
+# lets a program list what is plugged in without linking libusb.
+host_modules = ["usbenum"]
+
+category    = "embedded"
+
+tags        = ["usb", "usb2", "cdc-acm", "hid", "descriptor", "control-transfer", "device", "embedded", "sans-io"]
+repository  = "https://github.com/novolang/usb-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "A USB device, before there is a peripheral to drive it"
+
+[dependencies]
+# None.  A descriptor is a record of small integers and a control
+# transfer is a state machine over five of them; neither needs anything
+# but the language, and that is the property that lets the same modules
+# sit under a firmware and under a host tool.
+#
+# NOT heapless-nv, and the absence is the design.  An endpoint table
+# and a descriptor set are the CALLER's storage — a device stack that
+# owned them would have to know how many interfaces a product has
+# before the product exists.  A firmware pairs this with heapless-nv
+# for its own tables; the README says so.

@@ -1,0 +1,524 @@
+// usbhid.nv — HID: the report descriptor as a typed builder, and the
+// boot protocol reports.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A REPORT DESCRIPTOR IS A PROGRAM, WHICH IS WHY IT IS BUILT AND NOT
+// WRITTEN.  Every HID tutorial shows a wall of hex bytes copied from
+// another device, and the reason is that the format is a tiny
+// stack-based language: items carry a tag, a type and a size, globals
+// persist until changed and locals are consumed by the next main item.
+// A copied wall works until a field moves, and then nothing says where
+// it broke — a host that disagrees with a report descriptor reports no
+// error at all, it just delivers nothing.
+//
+// So an item here is a VALUE: `UsbHidItem` is the tag, the type and up
+// to four bytes of data, and `hid_item_byte` answers the wire bytes.
+// The eight builders below — `usage_page`, `usage`, `logical_min`,
+// `report_size`, `report_count`, `input`, `collection`, `end_collection`
+// — are the ones a keyboard, a mouse and a vendor-defined page need,
+// and each is one call with the number in it rather than three bytes to
+// get right.
+//
+// THE ITEM LIST IS THE CALLER'S.  A `@value` struct cannot own a
+// buffer, so this module does not accumulate a descriptor: it answers
+// one item at a time and the caller places them.  That is also what a
+// firmware wants, because a report descriptor is a constant and lives
+// in flash.
+//
+// BOOT PROTOCOL IS NOT A SIMPLER REPORT FORMAT, IT IS A DIFFERENT ONE.
+// A BIOS speaks it before any driver is loaded, and it has a fixed
+// layout the report descriptor does not describe: eight bytes for a
+// keyboard — modifiers, one reserved byte that is reserved and must be
+// zero, and six key codes — and three or four for a mouse.  A device
+// that declares the boot subclass and then sends its own layout works
+// under the operating system and not in the firmware setup screen.
+// `boot_keyboard_byte` and `boot_mouse_byte` are the fixed layouts.
+
+// ── The class numbers ────────────────────────────────────────────────
+
+// bInterfaceSubClass 0x00: no boot interface.
+pub const USB_HID_SUBCLASS_NONE = 0x00
+// bInterfaceSubClass 0x01: the device also speaks the boot protocol.
+pub const USB_HID_SUBCLASS_BOOT = 0x01
+
+// bInterfaceProtocol 0x00: neither a boot keyboard nor a boot mouse.
+pub const USB_HID_PROTOCOL_NONE = 0x00
+// bInterfaceProtocol 0x01: boot keyboard.
+pub const USB_HID_PROTOCOL_KEYBOARD = 0x01
+// bInterfaceProtocol 0x02: boot mouse.
+pub const USB_HID_PROTOCOL_MOUSE = 0x02
+
+// bDescriptorType for the HID descriptor itself, 0x21.
+pub const USB_HID_DESC_HID = 0x21
+// bDescriptorType for a report descriptor, 0x22.
+pub const USB_HID_DESC_REPORT = 0x22
+// bDescriptorType for a physical descriptor, 0x23.
+pub const USB_HID_DESC_PHYSICAL = 0x23
+
+// ── The class requests ───────────────────────────────────────────────
+
+// GET_REPORT — the host asking for a report over the control endpoint
+// rather than waiting for the interrupt endpoint.  A device MUST
+// answer it: a host uses it to read the initial state.
+pub const USB_HID_REQ_GET_REPORT = 0x01
+// GET_IDLE.
+pub const USB_HID_REQ_GET_IDLE = 0x02
+// GET_PROTOCOL — boot or report.
+pub const USB_HID_REQ_GET_PROTOCOL = 0x03
+// SET_REPORT — an output report, which is how a keyboard's LEDs are
+// driven.
+pub const USB_HID_REQ_SET_REPORT = 0x09
+// SET_IDLE — how often to resend an unchanged report, in 4 ms units;
+// 0 means "only on change", which is what a keyboard wants and what a
+// device that ignores the request fails to do.
+pub const USB_HID_REQ_SET_IDLE = 0x0A
+// SET_PROTOCOL.
+pub const USB_HID_REQ_SET_PROTOCOL = 0x0B
+
+// Report type input, in the high byte of GET_REPORT's wValue.
+pub const USB_HID_REPORT_INPUT = 0x01
+// Report type output.
+pub const USB_HID_REPORT_OUTPUT = 0x02
+// Report type feature.
+pub const USB_HID_REPORT_FEATURE = 0x03
+
+// The protocol value for boot.
+pub const USB_HID_PROTO_BOOT = 0
+// The protocol value for report.
+pub const USB_HID_PROTO_REPORT = 1
+
+// ── The HID descriptor ───────────────────────────────────────────────
+
+// The nine bytes that sit between a HID interface descriptor and its
+// endpoints, naming the report descriptor's length.
+//
+// A device with more than one subordinate descriptor makes this longer
+// than nine bytes; this type describes the single-report case, which
+// is every keyboard, mouse and vendor device in practice.
+pub @value
+struct UsbHidDesc
+    // bcdHID — 0x0111 for HID 1.11, which is what everything declares.
+    bcd_hid: Int
+    // bCountryCode: 0 for "not localised", 33 for US, and it changes
+    // nothing a host does except in a few keyboard cases.
+    country_code: Int
+    // wDescriptorLength — how long the report descriptor is.  A number
+    // that disagrees with the bytes the device actually sends is the
+    // fault that makes a device enumerate and deliver nothing.
+    report_length: Int
+
+// bLength of a HID descriptor with one subordinate descriptor: 9.
+pub const USB_HID_DESC_LEN = 9
+
+// Build a HID descriptor for a report descriptor of `report_length`
+// bytes.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     println("${usbhid.hid_report_length(usbhid.hid_desc(0x0111, 0, 63))}")
+// ```
+pub fn hid_desc(bcd_hid: Int, country_code: Int, report_length: Int) -> UsbHidDesc []
+    todo("usb-nv.usbhid.hid_desc")
+
+// bcdHID.
+pub fn hid_bcd(h: UsbHidDesc) -> Int []
+    todo("usb-nv.usbhid.hid_bcd")
+
+// bCountryCode.
+pub fn hid_country_code(h: UsbHidDesc) -> Int []
+    todo("usb-nv.usbhid.hid_country_code")
+
+// wDescriptorLength.
+pub fn hid_report_length(h: UsbHidDesc) -> Int []
+    todo("usb-nv.usbhid.hid_report_length")
+
+// The `i`-th wire byte of a HID descriptor.
+pub fn hid_desc_byte(h: UsbHidDesc, i: Int) -> Int []
+    todo("usb-nv.usbhid.hid_desc_byte")
+
+// ── Report descriptor items ──────────────────────────────────────────
+
+// One item of a report descriptor: a tag, a type, and up to four bytes
+// of data.
+//
+// `size` is how many data bytes the item carries — 0, 1, 2 or 4 — and
+// the item is `size + 1` bytes long on the wire.  A `@value` struct of
+// three integers, so a firmware builds a descriptor in a `const` table
+// without an allocator anywhere.
+pub @value
+struct UsbHidItem
+    // The item's tag, in the high nibble of the prefix byte.
+    tag: Int
+    // The item's type: main, global or local.
+    kind: Int
+    // How many data bytes follow: 0, 1, 2 or 4.
+    size: Int
+    // The data, little-endian, in the low `size` bytes.
+    data: Int
+
+// Item type: a main item — input, output, feature, collection.
+pub const USB_HID_TYPE_MAIN = 0
+// Item type: a global item, which persists until changed.
+pub const USB_HID_TYPE_GLOBAL = 1
+// Item type: a local item, which the next main item consumes.
+pub const USB_HID_TYPE_LOCAL = 2
+
+// Usage page: generic desktop — where a keyboard, a mouse and a
+// joystick live.
+pub const USB_HID_PAGE_GENERIC_DESKTOP = 0x01
+// Usage page: the keyboard key codes.
+pub const USB_HID_PAGE_KEYBOARD = 0x07
+// Usage page: LEDs, which is where a keyboard's caps lock is.
+pub const USB_HID_PAGE_LED = 0x08
+// Usage page: buttons, which is where a mouse's are.
+pub const USB_HID_PAGE_BUTTON = 0x09
+// The first vendor-defined usage page.
+pub const USB_HID_PAGE_VENDOR = 0xFF00
+
+// Usage: pointer.
+pub const USB_HID_USAGE_POINTER = 0x01
+// Usage: mouse.
+pub const USB_HID_USAGE_MOUSE = 0x02
+// Usage: keyboard.
+pub const USB_HID_USAGE_KEYBOARD = 0x06
+// Usage: the X axis.
+pub const USB_HID_USAGE_X = 0x30
+// Usage: the Y axis.
+pub const USB_HID_USAGE_Y = 0x31
+// Usage: the wheel.
+pub const USB_HID_USAGE_WHEEL = 0x38
+
+// Collection type: physical.
+pub const USB_HID_COLLECTION_PHYSICAL = 0x00
+// Collection type: application — what every top-level collection is.
+pub const USB_HID_COLLECTION_APPLICATION = 0x01
+
+// The bit in an input item's data that says the field is variable
+// rather than an array.  A keyboard's modifier byte is variable and
+// its six key slots are an array, and swapping the two is the bug that
+// makes every key report as the same key.
+pub const USB_HID_ITEM_VARIABLE = 0x02
+// The bit that says the field is constant — padding.
+pub const USB_HID_ITEM_CONSTANT = 0x01
+// The bit that says the field is relative, which a mouse's axes are
+// and a joystick's are not.
+pub const USB_HID_ITEM_RELATIVE = 0x04
+
+// How many bytes an item occupies on the wire: one prefix plus its
+// data.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     println("${usbhid.hid_item_len(usbhid.usage_page(usbhid.USB_HID_PAGE_GENERIC_DESKTOP))}")
+// ```
+pub fn hid_item_len(it: UsbHidItem) -> Int []
+    todo("usb-nv.usbhid.hid_item_len")
+
+// The `i`-th wire byte of an item: the prefix, then the data
+// little-endian.
+pub fn hid_item_byte(it: UsbHidItem, i: Int) -> Int []
+    todo("usb-nv.usbhid.hid_item_byte")
+
+// Build an item from its four parts, for a tag this module has no
+// builder for.
+//
+// The escape hatch, and the reason the eight builders below are not a
+// closed list: the format has around thirty tags and a device that
+// needs the thirtieth should not have to wait for this package.
+pub fn hid_item(tag: Int, kind: Int, size: Int, data: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.hid_item")
+
+// A global USAGE_PAGE item.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     let it = usbhid.usage_page(usbhid.USB_HID_PAGE_GENERIC_DESKTOP)
+//     println("${usbhid.hid_item_len(it)}")   // 2
+// ```
+pub fn usage_page(page: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.usage_page")
+
+// A local USAGE item.
+pub fn usage(id: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.usage")
+
+// A local USAGE_MINIMUM item, which with USAGE_MAXIMUM names a range
+// of usages rather than listing them.
+pub fn usage_min(id: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.usage_min")
+
+// A local USAGE_MAXIMUM item.
+pub fn usage_max(id: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.usage_max")
+
+// A global LOGICAL_MINIMUM item.
+//
+// Signed, and the sign is the field a copied descriptor gets wrong: a
+// mouse's axes run -127 to 127 and a logical minimum written as 129
+// reports every leftward movement as a large rightward one.
+pub fn logical_min(v: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.logical_min")
+
+// A global LOGICAL_MAXIMUM item.
+pub fn logical_max(v: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.logical_max")
+
+// A global REPORT_SIZE item — how many BITS one field occupies.
+//
+// Bits, not bytes.  `report_size(8)` and `report_count(6)` is six
+// bytes; the two are multiplied, and reading either as the other is
+// why a report comes out eight times too long.
+pub fn report_size(bits: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.report_size")
+
+// A global REPORT_COUNT item — how many fields of that size.
+pub fn report_count(n: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.report_count")
+
+// A global REPORT_ID item.
+//
+// The moment a device declares one, EVERY report on every endpoint
+// gains a leading identifier byte, including the ones that were
+// already working.  It is the single change that most often breaks a
+// descriptor that was fine.
+pub fn report_id(id: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.report_id")
+
+// A main INPUT item — data the device sends.
+pub fn input(flags: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.input")
+
+// A main OUTPUT item — data the host sends.
+pub fn output(flags: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.output")
+
+// A main FEATURE item — configuration read and written over the
+// control endpoint.
+pub fn feature(flags: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.feature")
+
+// A main COLLECTION item.
+pub fn collection(kind: Int) -> UsbHidItem []
+    todo("usb-nv.usbhid.collection")
+
+// A main END_COLLECTION item, which carries no data.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     println("${usbhid.hid_item_len(usbhid.end_collection())}")   // 1
+// ```
+pub fn end_collection() -> UsbHidItem []
+    todo("usb-nv.usbhid.end_collection")
+
+// Why an item cannot be placed on the wire, or nothing: a size that is
+// not 0, 1, 2 or 4, or data that does not fit the size.
+pub fn check_hid_item(it: UsbHidItem) -> ?UsbError []
+    todo("usb-nv.usbhid.check_hid_item")
+
+// ── The boot protocol reports ────────────────────────────────────────
+
+// How long a boot keyboard input report is: 8.
+pub const USB_HID_BOOT_KEYBOARD_LEN = 8
+// How long a boot keyboard output report — the LED byte — is: 1.
+pub const USB_HID_BOOT_KEYBOARD_OUT_LEN = 1
+// How long a boot mouse input report is: 3.  A fourth byte carrying a
+// wheel is a common extension and is not boot protocol.
+pub const USB_HID_BOOT_MOUSE_LEN = 3
+
+// The left control modifier bit.
+pub const USB_HID_MOD_LEFT_CTRL = 0x01
+// The left shift modifier bit.
+pub const USB_HID_MOD_LEFT_SHIFT = 0x02
+// The left alt modifier bit.
+pub const USB_HID_MOD_LEFT_ALT = 0x04
+// The left GUI modifier bit — the key with the vendor's logo on it.
+pub const USB_HID_MOD_LEFT_GUI = 0x08
+// The right control modifier bit.
+pub const USB_HID_MOD_RIGHT_CTRL = 0x10
+// The right shift modifier bit.
+pub const USB_HID_MOD_RIGHT_SHIFT = 0x20
+// The right alt modifier bit.
+pub const USB_HID_MOD_RIGHT_ALT = 0x40
+// The right GUI modifier bit.
+pub const USB_HID_MOD_RIGHT_GUI = 0x80
+
+// A boot keyboard report: the modifier byte and up to six key codes.
+//
+// Six `Int` fields rather than a list, because a `@value` struct
+// cannot own a buffer and the count is fixed at six by the protocol.
+// The reserved byte is not a field: it is zero, always, and a device
+// that puts anything else there is refused by some BIOSes.
+pub @value
+struct UsbBootKeyReport
+    // The modifier bits.
+    modifiers: Int
+    // The first key code, or 0 for none.
+    key1: Int
+    // The second.
+    key2: Int
+    // The third.
+    key3: Int
+    // The fourth.
+    key4: Int
+    // The fifth.
+    key5: Int
+    // The sixth.
+    key6: Int
+
+// Build a boot keyboard report.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     let r = usbhid.boot_key_report(usbhid.USB_HID_MOD_LEFT_SHIFT, 4, 0, 0, 0, 0, 0)
+//     println("${usbhid.boot_keyboard_byte(r, 0)}")   // 2
+// ```
+pub fn boot_key_report(modifiers: Int, key1: Int, key2: Int, key3: Int, key4: Int, key5: Int,
+                       key6: Int) -> UsbBootKeyReport []
+    todo("usb-nv.usbhid.boot_key_report")
+
+// A report with nothing held down, which is the report a device must
+// send after every key release — a keyboard that stops sending when
+// the last key comes up leaves that key repeating forever.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     println("${usbhid.boot_keyboard_byte(usbhid.boot_key_none(), 2)}")   // 0
+// ```
+pub fn boot_key_none() -> UsbBootKeyReport []
+    todo("usb-nv.usbhid.boot_key_none")
+
+// The modifier byte.
+pub fn boot_key_modifiers(r: UsbBootKeyReport) -> Int []
+    todo("usb-nv.usbhid.boot_key_modifiers")
+
+// The `n`-th key code, 1 to 6, or 0 outside that range.
+pub fn boot_key_at(r: UsbBootKeyReport, n: Int) -> Int []
+    todo("usb-nv.usbhid.boot_key_at")
+
+// How many key codes the report holds.
+pub fn boot_key_count(r: UsbBootKeyReport) -> Int []
+    todo("usb-nv.usbhid.boot_key_count")
+
+// Add a key code to the first free slot, or answer the report
+// unchanged when all six are taken.
+//
+// Unchanged rather than refused, and the argument is the protocol's:
+// six is the limit and the specification's answer to a seventh
+// simultaneous key is a rollover report, not a dropped report.
+// `boot_key_is_full` is how a caller that wants to send one asks.
+pub fn boot_key_pressed(r: UsbBootKeyReport, code: Int) -> UsbBootKeyReport []
+    todo("usb-nv.usbhid.boot_key_pressed")
+
+// Remove a key code, if it is there.
+pub fn boot_key_released(r: UsbBootKeyReport, code: Int) -> UsbBootKeyReport []
+    todo("usb-nv.usbhid.boot_key_released")
+
+// Whether all six slots are taken.
+pub fn boot_key_is_full(r: UsbBootKeyReport) -> Bool []
+    todo("usb-nv.usbhid.boot_key_is_full")
+
+// The `i`-th of the eight wire bytes: modifiers, the zero reserved
+// byte, then the six key codes.
+pub fn boot_keyboard_byte(r: UsbBootKeyReport, i: Int) -> Int []
+    todo("usb-nv.usbhid.boot_keyboard_byte")
+
+// A boot mouse report: the button bits and two signed displacements.
+pub @value
+struct UsbBootMouseReport
+    // Bit 0 is the left button, bit 1 the right, bit 2 the middle.
+    buttons: Int
+    // Movement along X since the last report, -127 to 127.
+    dx: Int
+    // Movement along Y, positive downwards — which is the opposite of
+    // what a screen coordinate usually means and is the protocol's.
+    dy: Int
+
+// The left mouse button bit.
+pub const USB_HID_BUTTON_LEFT = 0x01
+// The right mouse button bit.
+pub const USB_HID_BUTTON_RIGHT = 0x02
+// The middle mouse button bit.
+pub const USB_HID_BUTTON_MIDDLE = 0x04
+
+// Build a boot mouse report.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     let m = usbhid.boot_mouse_report(usbhid.USB_HID_BUTTON_LEFT, 5, 0 - 3)
+//     println("${usbhid.boot_mouse_byte(m, 1)}")   // 5
+// ```
+pub fn boot_mouse_report(buttons: Int, dx: Int, dy: Int) -> UsbBootMouseReport []
+    todo("usb-nv.usbhid.boot_mouse_report")
+
+// The button bits.
+pub fn boot_mouse_buttons(m: UsbBootMouseReport) -> Int []
+    todo("usb-nv.usbhid.boot_mouse_buttons")
+
+// The X displacement.
+pub fn boot_mouse_dx(m: UsbBootMouseReport) -> Int []
+    todo("usb-nv.usbhid.boot_mouse_dx")
+
+// The Y displacement.
+pub fn boot_mouse_dy(m: UsbBootMouseReport) -> Int []
+    todo("usb-nv.usbhid.boot_mouse_dy")
+
+// The `i`-th of the three wire bytes, the displacements as two's
+// complement bytes.
+pub fn boot_mouse_byte(m: UsbBootMouseReport, i: Int) -> Int []
+    todo("usb-nv.usbhid.boot_mouse_byte")
+
+// ── A HID interface's descriptors ────────────────────────────────────
+
+// How many bytes the boot keyboard report descriptor occupies: the
+// standard one every example prints, 63 bytes.
+pub const USB_HID_BOOT_KEYBOARD_DESC_LEN = 63
+
+// The `i`-th byte of the boot keyboard report descriptor.
+//
+// The one report descriptor in this module that is a constant rather
+// than something a caller builds, because the boot protocol's layout
+// is fixed and a device that declares the boot subclass must match it.
+//
+// ```novo
+// use usbhid
+//
+// fn main() [io]
+//     println("${usbhid.boot_keyboard_report_desc_byte(0)}")   // 5
+// ```
+pub fn boot_keyboard_report_desc_byte(i: Int) -> Int []
+    todo("usb-nv.usbhid.boot_keyboard_report_desc_byte")
+
+// How many bytes the boot mouse report descriptor occupies: 50.
+pub const USB_HID_BOOT_MOUSE_DESC_LEN = 50
+
+// The `i`-th byte of the boot mouse report descriptor.
+pub fn boot_mouse_report_desc_byte(i: Int) -> Int []
+    todo("usb-nv.usbhid.boot_mouse_report_desc_byte")
+
+// The interface descriptor for a HID function with one interrupt IN
+// endpoint.
+pub fn hid_interface_desc(interface_number: Int, sub_class: Int,
+                          protocol: Int) -> UsbInterfaceDesc []
+    todo("usb-nv.usbhid.hid_interface_desc")
+
+// The interrupt IN endpoint descriptor for a HID function.
+//
+// `interval` is in frames at full speed, so 10 is a 100 Hz report
+// rate; a keyboard usually asks for 10 and a mouse for 1.
+pub fn hid_endpoint_desc(address: Int, packet_size: Int, interval: Int) -> UsbEndpointDesc []
+    todo("usb-nv.usbhid.hid_endpoint_desc")

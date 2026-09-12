@@ -1,0 +1,197 @@
+// usbhid_tests.nv — HID: the item encoding, the two multiplied
+// numbers, and the boot protocol's fixed layouts.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbhid.<fn>`.
+//
+// THE VECTORS ARE THE HID 1.11 SPECIFICATION AND ITS APPENDIX B.  The
+// item prefix byte is § 6.2.2.2 — bSize in bits 0-1, bType in 2-3,
+// bTag in 4-7 — so `05 01` is USAGE_PAGE(Generic Desktop) and is the
+// first two bytes of every keyboard and mouse descriptor ever written.
+// Appendix B gives the boot keyboard and boot mouse report layouts,
+// which is where the eight-byte and three-byte lengths come from.
+
+use std.test
+use usbhid
+use usbdesc
+
+// Whether a check refused.  An optional is matched rather than
+// compared, so the two-line helper is what every assertion below
+// goes through.
+fn refused(e: ?UsbError) -> Bool
+    match e
+        Some(_) => true
+        None    => false
+
+@test
+fn test_an_item_prefix_packs_the_tag_the_type_and_the_size() [io]
+    test.case("HID 1.11 section 6.2.2.2: USAGE_PAGE(Generic Desktop) is 05 01")
+    let it = usbhid.usage_page(usbhid.USB_HID_PAGE_GENERIC_DESKTOP)
+    test.assert_eq(usbhid.hid_item_len(it), 2)
+    test.assert_eq(usbhid.hid_item_byte(it, 0), 0x05)
+    test.assert_eq(usbhid.hid_item_byte(it, 1), 0x01)
+
+    test.case("USAGE(Keyboard) is 09 06")
+    let u = usbhid.usage(usbhid.USB_HID_USAGE_KEYBOARD)
+    test.assert_eq(usbhid.hid_item_byte(u, 0), 0x09)
+    test.assert_eq(usbhid.hid_item_byte(u, 1), 0x06)
+
+    test.case("COLLECTION(Application) is A1 01")
+    let c = usbhid.collection(usbhid.USB_HID_COLLECTION_APPLICATION)
+    test.assert_eq(usbhid.hid_item_byte(c, 0), 0xA1)
+    test.assert_eq(usbhid.hid_item_byte(c, 1), 0x01)
+
+@test
+fn test_end_collection_is_one_byte_because_it_carries_no_data() [io]
+    test.case("C0, and a size of 0 in the prefix — the one item with nothing after it")
+    let e = usbhid.end_collection()
+    test.assert_eq(usbhid.hid_item_len(e), 1)
+    test.assert_eq(usbhid.hid_item_byte(e, 0), 0xC0)
+
+@test
+fn test_a_two_byte_usage_page_takes_a_two_byte_item() [io]
+    test.case("the vendor page 0xFF00 does not fit a byte, so the item grows and the prefix says so")
+    let it = usbhid.usage_page(usbhid.USB_HID_PAGE_VENDOR)
+    test.assert_eq(usbhid.hid_item_len(it), 3)
+    test.assert_eq(usbhid.hid_item_byte(it, 0), 0x06)
+    test.assert_eq(usbhid.hid_item_byte(it, 1), 0x00)
+    test.assert_eq(usbhid.hid_item_byte(it, 2), 0xFF)
+
+@test
+fn test_report_size_is_bits_and_report_count_is_fields() [io]
+    test.case("the two are MULTIPLIED: 8 bits by 6 fields is six bytes, and reading either as the other is a report eight times too long")
+    let size = usbhid.report_size(8)
+    let count = usbhid.report_count(6)
+    test.assert_eq(usbhid.hid_item_byte(size, 0), 0x75)
+    test.assert_eq(usbhid.hid_item_byte(size, 1), 8)
+    test.assert_eq(usbhid.hid_item_byte(count, 0), 0x95)
+    test.assert_eq(usbhid.hid_item_byte(count, 1), 6)
+
+@test
+fn test_a_logical_minimum_is_signed() [io]
+    test.case("a mouse's axes run -127 to 127, and a minimum written as 129 reports every leftward movement as a large rightward one")
+    let lo = usbhid.logical_min(0 - 127)
+    test.assert_eq(usbhid.hid_item_byte(lo, 0), 0x15)
+    test.assert_eq(usbhid.hid_item_byte(lo, 1), 0x81)
+
+    let hi = usbhid.logical_max(127)
+    test.assert_eq(usbhid.hid_item_byte(hi, 0), 0x25)
+    test.assert_eq(usbhid.hid_item_byte(hi, 1), 0x7F)
+
+@test
+fn test_variable_and_array_are_different_input_items() [io]
+    test.case("a keyboard's modifier byte is variable and its six key slots are an array, and swapping them makes every key report as the same key")
+    let variable = usbhid.input(usbhid.USB_HID_ITEM_VARIABLE)
+    test.assert_eq(usbhid.hid_item_byte(variable, 0), 0x81)
+    test.assert_eq(usbhid.hid_item_byte(variable, 1), 0x02)
+
+    let array = usbhid.input(0)
+    test.assert_eq(usbhid.hid_item_byte(array, 1), 0x00)
+
+    test.case("and padding is constant")
+    test.assert_eq(usbhid.hid_item_byte(usbhid.input(usbhid.USB_HID_ITEM_CONSTANT), 1), 0x01)
+
+@test
+fn test_an_item_size_that_is_not_zero_one_two_or_four_is_refused() [io]
+    test.case("the prefix has two bits for the size and the encoding is 0, 1, 2 and 4 — there is no three")
+    test.assert(refused(usbhid.check_hid_item(usbhid.hid_item(0x00, 1, 3, 0))))
+    test.assert(refused(usbhid.check_hid_item(usbhid.hid_item(0x00, 1, 2, 0))) == false)
+
+@test
+fn test_data_that_does_not_fit_the_declared_size_is_refused() [io]
+    test.case("a one-byte item carrying 0x1234 writes 0x34 and loses the rest, silently, in flash")
+    test.assert(refused(usbhid.check_hid_item(usbhid.hid_item(0x00, 1, 1, 0x1234))))
+
+@test
+fn test_the_boot_keyboard_report_is_eight_bytes_with_a_reserved_one() [io]
+    test.case("HID appendix B: modifiers, one byte that is reserved and must be zero, and six key codes")
+    test.assert_eq(usbhid.USB_HID_BOOT_KEYBOARD_LEN, 8)
+    let r = usbhid.boot_key_report(usbhid.USB_HID_MOD_LEFT_SHIFT, 4, 0, 0, 0, 0, 0)
+    test.assert_eq(usbhid.boot_keyboard_byte(r, 0), 0x02)
+    test.assert_eq(usbhid.boot_keyboard_byte(r, 1), 0x00)
+    test.assert_eq(usbhid.boot_keyboard_byte(r, 2), 4)
+    test.assert_eq(usbhid.boot_keyboard_byte(r, 7), 0)
+
+@test
+fn test_the_empty_report_is_the_one_a_keyboard_must_send_on_release() [io]
+    test.case("a keyboard that stops sending when the last key comes up leaves that key repeating forever")
+    let none = usbhid.boot_key_none()
+    test.assert_eq(usbhid.boot_key_modifiers(none), 0)
+    test.assert_eq(usbhid.boot_key_count(none), 0)
+    test.assert_eq(usbhid.boot_keyboard_byte(none, 2), 0)
+
+@test
+fn test_six_keys_is_the_limit_and_a_seventh_changes_nothing() [io]
+    test.case("the protocol's answer to a seventh simultaneous key is a rollover report, not a dropped one")
+    var r = usbhid.boot_key_none()
+    r = usbhid.boot_key_pressed(r, 4)
+    r = usbhid.boot_key_pressed(r, 5)
+    r = usbhid.boot_key_pressed(r, 6)
+    r = usbhid.boot_key_pressed(r, 7)
+    r = usbhid.boot_key_pressed(r, 8)
+    r = usbhid.boot_key_pressed(r, 9)
+    test.assert_eq(usbhid.boot_key_count(r), 6)
+    test.assert(usbhid.boot_key_is_full(r))
+
+    let seventh = usbhid.boot_key_pressed(r, 10)
+    test.assert_eq(usbhid.boot_key_count(seventh), 6)
+    test.assert_eq(usbhid.boot_key_at(seventh, 1), 4)
+
+    test.case("and a release makes room again")
+    let after = usbhid.boot_key_released(r, 4)
+    test.assert_eq(usbhid.boot_key_count(after), 5)
+    test.assert(usbhid.boot_key_is_full(after) == false)
+
+@test
+fn test_the_boot_mouse_report_is_three_bytes_in_twos_complement() [io]
+    test.case("HID appendix B, and a fourth wheel byte is an extension rather than boot protocol")
+    test.assert_eq(usbhid.USB_HID_BOOT_MOUSE_LEN, 3)
+    let m = usbhid.boot_mouse_report(usbhid.USB_HID_BUTTON_LEFT, 5, 0 - 3)
+    test.assert_eq(usbhid.boot_mouse_byte(m, 0), 0x01)
+    test.assert_eq(usbhid.boot_mouse_byte(m, 1), 5)
+    test.assert_eq(usbhid.boot_mouse_byte(m, 2), 0xFD)
+
+@test
+fn test_the_hid_descriptor_declares_the_report_descriptors_length() [io]
+    test.case("a number that disagrees with the bytes the device sends is the fault that enumerates and delivers nothing")
+    let h = usbhid.hid_desc(0x0111, 0, usbhid.USB_HID_BOOT_KEYBOARD_DESC_LEN)
+    test.assert_eq(usbhid.hid_desc_byte(h, 0), 9)
+    test.assert_eq(usbhid.hid_desc_byte(h, 1), usbhid.USB_HID_DESC_HID)
+    test.assert_eq(usbhid.hid_desc_byte(h, 2), 0x11)
+    test.assert_eq(usbhid.hid_desc_byte(h, 3), 0x01)
+    test.assert_eq(usbhid.hid_desc_byte(h, 6), usbhid.USB_HID_DESC_REPORT)
+    test.assert_eq(usbhid.hid_desc_byte(h, 7), 63)
+    test.assert_eq(usbhid.hid_desc_byte(h, 8), 0)
+
+@test
+fn test_the_boot_keyboard_report_descriptor_starts_as_every_example_does() [io]
+    test.case("05 01 09 06 A1 01 — usage page generic desktop, usage keyboard, application collection")
+    test.assert_eq(usbhid.USB_HID_BOOT_KEYBOARD_DESC_LEN, 63)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(0), 0x05)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(1), 0x01)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(2), 0x09)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(3), 0x06)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(4), 0xA1)
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(5), 0x01)
+
+    test.case("and it ends with END_COLLECTION")
+    test.assert_eq(usbhid.boot_keyboard_report_desc_byte(62), 0xC0)
+
+@test
+fn test_the_boot_subclass_and_protocol_are_two_different_fields() [io]
+    test.case("subclass 1 says the device speaks boot protocol at all; protocol 1 says which boot device it is")
+    test.assert_eq(usbhid.USB_HID_SUBCLASS_BOOT, 0x01)
+    test.assert_eq(usbhid.USB_HID_PROTOCOL_KEYBOARD, 0x01)
+    test.assert_eq(usbhid.USB_HID_PROTOCOL_MOUSE, 0x02)
+
+    let i = usbhid.hid_interface_desc(0, usbhid.USB_HID_SUBCLASS_BOOT,
+                                      usbhid.USB_HID_PROTOCOL_KEYBOARD)
+    test.assert_eq(usbdesc.interface_class(i), usbdesc.USB_CLASS_HID)
+    test.assert_eq(usbdesc.num_endpoints(i), 1)
+
+@test
+fn test_a_hid_endpoint_is_interrupt_in() [io]
+    let e = usbhid.hid_endpoint_desc(usbdesc.endpoint_in(1), 8, 10)
+    test.assert_eq(usbdesc.transfer_type(e), usbdesc.USB_XFER_INTERRUPT)
+    test.assert_eq(usbdesc.interval(e), 10)
+    test.assert(usbdesc.endpoint_is_in(usbdesc.endpoint_address(e)))

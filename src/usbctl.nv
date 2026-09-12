@@ -1,0 +1,521 @@
+// usbctl.nv — the setup packet, the standard requests, and the
+// control-transfer state machine.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `UsbCtlStep` IS THE LOAD-BEARING INTERFACE OF THIS PACKAGE, and the
+// argument for it is one sentence of USB 2.0 § 9.4.6: a device that
+// receives SET_ADDRESS keeps answering on address 0 until the STATUS
+// stage of that transfer has completed, and only then adopts the new
+// address.  A stack that writes the address register when the SETUP
+// packet arrives sends its zero-length status packet from the new
+// address, the host never sees it, and the device enumerates on some
+// hosts and not others depending on how fast their controller is.
+//
+// The bug is invisible in a `handle_setup(packet) -> Response` design,
+// because there is no moment in it that corresponds to "the status
+// stage completed".  So this machine does not answer a response: it
+// answers an ACTION and a DEFERRED action, and `USB_ACT_SET_ADDRESS`
+// is the deferred one.  A driver performs `action` now and `deferred`
+// when the status stage completes, and the ordering stops being
+// something to remember.
+//
+// THE SAME SHAPE PAYS FOR THREE OTHER ORDERINGS.  A GET_DESCRIPTOR
+// whose wLength is shorter than the descriptor must be truncated and
+// must NOT be followed by a zero-length packet; one whose wLength is
+// longer and whose descriptor is a whole multiple of the endpoint
+// packet size MUST be followed by one, or the host waits for a
+// transfer that never ends.  SET_CONFIGURATION(0) returns a configured
+// device to the address state and every endpoint but 0 has to be
+// disabled before the status stage.  And a request the device does not
+// implement is a STALL rather than a silence.  All four are actions.
+//
+// WHY INT CODES AND NOT AN ENUM.  A `@value` struct cannot hold an
+// enum at all, even a payload-free one (E2011), and `UsbCtlStep` has
+// to be a `@value` — it is answered on every SETUP packet, in an
+// interrupt, on a part with no allocator.  So the actions are `Int`
+// discriminants with the `USB_ACT_*` constants as the vocabulary, the
+// same trade pid-nv made for its anti-windup policy.  `action_name`
+// turns one back into words for a log.
+
+// ── The SETUP packet ─────────────────────────────────────────────────
+
+// The eight bytes every control transfer starts with.
+//
+// A `@value` struct of five integers, so a driver holds one in the
+// interrupt frame that received it.
+pub @value
+struct UsbSetup
+    // bmRequestType: direction in bit 7, type in bits 6-5, recipient
+    // in bits 4-0.
+    request_type: Int
+    // bRequest.
+    request: Int
+    // wValue — for GET_DESCRIPTOR, the descriptor type in the high
+    // byte and the index in the low one.
+    value: Int
+    // wIndex — an interface or endpoint number for a request whose
+    // recipient is one of those, and the language identifier for a
+    // string descriptor.
+    index: Int
+    // wLength: how many bytes the DATA stage may carry.  Zero means
+    // there is no data stage.
+    length: Int
+
+// The direction bit in bmRequestType, set when the DATA stage moves
+// data towards the host.
+pub const USB_REQ_DIR_IN = 0x80
+
+// Request type: one of the standard requests below.
+pub const USB_REQ_TYPE_STANDARD = 0x00
+// Request type: defined by a device class — CDC's SET_LINE_CODING,
+// HID's SET_REPORT.
+pub const USB_REQ_TYPE_CLASS = 0x20
+// Request type: defined by the vendor.  WebUSB and MS OS 2.0 both
+// arrive this way.
+pub const USB_REQ_TYPE_VENDOR = 0x40
+
+// Recipient: the device itself.
+pub const USB_RECIP_DEVICE = 0x00
+// Recipient: one interface, named by wIndex.
+pub const USB_RECIP_INTERFACE = 0x01
+// Recipient: one endpoint, named by wIndex.
+pub const USB_RECIP_ENDPOINT = 0x02
+// Recipient: something else the device defines.
+pub const USB_RECIP_OTHER = 0x03
+
+// ── The standard requests (USB 2.0 table 9-4) ────────────────────────
+
+// GET_STATUS.
+pub const USB_REQ_GET_STATUS = 0x00
+// CLEAR_FEATURE — the request that clears a halted endpoint.
+pub const USB_REQ_CLEAR_FEATURE = 0x01
+// SET_FEATURE.
+pub const USB_REQ_SET_FEATURE = 0x03
+// SET_ADDRESS, whose ordering this module exists for.
+pub const USB_REQ_SET_ADDRESS = 0x05
+// GET_DESCRIPTOR.
+pub const USB_REQ_GET_DESCRIPTOR = 0x06
+// SET_DESCRIPTOR, which almost no device implements.
+pub const USB_REQ_SET_DESCRIPTOR = 0x07
+// GET_CONFIGURATION.
+pub const USB_REQ_GET_CONFIGURATION = 0x08
+// SET_CONFIGURATION.
+pub const USB_REQ_SET_CONFIGURATION = 0x09
+// GET_INTERFACE — which alternate setting an interface is in.
+pub const USB_REQ_GET_INTERFACE = 0x0A
+// SET_INTERFACE.
+pub const USB_REQ_SET_INTERFACE = 0x0B
+// SYNCH_FRAME, for isochronous endpoints.
+pub const USB_REQ_SYNCH_FRAME = 0x0C
+
+// The feature selector for a halted endpoint, which is the only
+// feature most devices implement.
+pub const USB_FEATURE_ENDPOINT_HALT = 0x00
+// The feature selector for remote wakeup.
+pub const USB_FEATURE_DEVICE_REMOTE_WAKEUP = 0x01
+
+// Build a setup packet from its five fields.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 18)
+//     println("${usbctl.setup_length(s)}")   // 18
+// ```
+pub fn setup(request_type: Int, request: Int, value: Int, index: Int, length: Int) -> UsbSetup []
+    todo("usb-nv.usbctl.setup")
+
+// Decode a setup packet from eight little-endian bytes at `off`.
+//
+// Answers a zeroed packet when fewer than eight bytes are available,
+// because a `@value` struct cannot be a `Result` payload (SPEC
+// § 14.5); `check_setup` is the refusal beside it.
+pub fn setup_decode(buf: [u8], off: Int) -> UsbSetup []
+    todo("usb-nv.usbctl.setup_decode")
+
+// The `i`-th wire byte of a setup packet, for a host that is sending
+// one.
+pub fn setup_byte(s: UsbSetup, i: Int) -> Int []
+    todo("usb-nv.usbctl.setup_byte")
+
+// bmRequestType.
+pub fn setup_request_type(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_request_type")
+
+// bRequest.
+pub fn setup_request(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_request")
+
+// wValue.
+pub fn setup_value(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_value")
+
+// wIndex.
+pub fn setup_index(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_index")
+
+// wLength.
+pub fn setup_length(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_length")
+
+// Whether the DATA stage moves data towards the host.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 18)
+//     println("${usbctl.setup_is_in(s)}")   // true
+// ```
+pub fn setup_is_in(s: UsbSetup) -> Bool []
+    todo("usb-nv.usbctl.setup_is_in")
+
+// The request type — standard, class or vendor.
+pub fn setup_kind(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_kind")
+
+// The recipient — device, interface, endpoint or other.
+pub fn setup_recipient(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_recipient")
+
+// The descriptor type in the high byte of wValue, for a
+// GET_DESCRIPTOR.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0100, 0, 18)
+//     println("${usbctl.setup_descriptor_type(s)}")   // 1
+// ```
+pub fn setup_descriptor_type(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_descriptor_type")
+
+// The descriptor index in the low byte of wValue.
+pub fn setup_descriptor_index(s: UsbSetup) -> Int []
+    todo("usb-nv.usbctl.setup_descriptor_index")
+
+// Why a setup packet cannot be acted on, or nothing.
+pub fn check_setup(s: UsbSetup) -> ?UsbError []
+    todo("usb-nv.usbctl.check_setup")
+
+// ── The device states (USB 2.0 § 9.1) ────────────────────────────────
+
+// No power on the bus.
+pub const USB_STATE_DETACHED = 0
+// Powered, but the host has not reset the bus yet.
+pub const USB_STATE_POWERED = 1
+// Reset seen; answering on address 0.
+pub const USB_STATE_DEFAULT = 2
+// SET_ADDRESS completed; answering on its own address, with no
+// configuration selected.
+pub const USB_STATE_ADDRESS = 3
+// SET_CONFIGURATION with a non-zero value completed; the interfaces'
+// endpoints are live.
+pub const USB_STATE_CONFIGURED = 4
+// Suspended — no bus activity for 3 ms.  A device must drop to 500 µA
+// here, which is the one state a battery-powered product cares about.
+pub const USB_STATE_SUSPENDED = 5
+
+// ── The actions a driver performs ────────────────────────────────────
+
+// Nothing to do.
+pub const USB_ACT_NONE = 0
+// Write `len` bytes from the descriptor or buffer the step names onto
+// endpoint 0 IN, in packets of the control endpoint's size.
+pub const USB_ACT_DATA_IN = 1
+// Read `len` bytes from endpoint 0 OUT into the caller's buffer.
+pub const USB_ACT_DATA_OUT = 2
+// Send a zero-length packet on endpoint 0 IN: the status stage of an
+// OUT transfer, or the acknowledgement of a no-data request.
+pub const USB_ACT_STATUS_IN = 3
+// Accept a zero-length packet on endpoint 0 OUT: the status stage of
+// an IN transfer.
+pub const USB_ACT_STATUS_OUT = 4
+// Stall endpoint 0, which is how a device says it does not implement
+// the request.  Not an error on the bus and not a fault to log at
+// severity: a host probes for optional requests on purpose.
+pub const USB_ACT_STALL = 5
+// Write `arg` into the address register.  **Deferred**: it appears in
+// `deferred` and never in `action`, and a driver performs it after the
+// status stage has completed.
+pub const USB_ACT_SET_ADDRESS = 6
+// Enable the endpoints of configuration `arg` and enter the
+// configured state.
+pub const USB_ACT_SET_CONFIGURATION = 7
+// Disable every endpoint but 0 and return to the address state.  What
+// SET_CONFIGURATION(0) means.
+pub const USB_ACT_UNCONFIGURE = 8
+// Select alternate setting `arg2` on interface `arg`.
+pub const USB_ACT_SET_INTERFACE = 9
+// Clear the halt on endpoint `arg` and reset its data toggle.  The
+// toggle reset is half the request and the half that is forgotten: an
+// endpoint whose halt is cleared without it resumes on the wrong
+// toggle and the host discards every packet.
+pub const USB_ACT_CLEAR_HALT = 10
+// Halt endpoint `arg`.
+pub const USB_ACT_SET_HALT = 11
+// Hand the setup packet to the class handler: it is a class or vendor
+// request this machine does not own.  `usbcdc` and `usbhid` are where
+// those go.
+pub const USB_ACT_CLASS_REQUEST = 12
+
+// ── The step ─────────────────────────────────────────────────────────
+
+// What a driver does with one setup packet, and what it does after.
+//
+// `action` is performed immediately.  `deferred` is performed when the
+// STATUS stage of this transfer has completed, and is
+// `USB_ACT_SET_ADDRESS` or `USB_ACT_NONE` — the whole reason the type
+// has two fields rather than one.
+//
+// `data_source` says WHICH descriptor a `USB_ACT_DATA_IN` should send:
+// one of the `USB_DESC_*` codes for a standard descriptor, or
+// `USB_SRC_*` below for the short standard replies that are not
+// descriptors at all.  A `@value` struct cannot own a buffer, so the
+// bytes stay the caller's and this names which ones.
+pub @value
+struct UsbCtlStep
+    // What to do now: one of the `USB_ACT_*` codes.
+    action: Int
+    // What to do once the status stage has completed.
+    deferred: Int
+    // The action's argument — an address, a configuration value, an
+    // endpoint number.
+    arg: Int
+    // A second argument, for the one action that needs two:
+    // `USB_ACT_SET_INTERFACE`'s alternate setting.
+    arg2: Int
+    // How many bytes the data stage carries, already truncated to
+    // wLength.
+    len: Int
+    // Which bytes a `USB_ACT_DATA_IN` sends.
+    data_source: Int
+    // Whether the data stage must be followed by a zero-length packet
+    // because it is shorter than wLength and a whole multiple of the
+    // endpoint's packet size.  The host waits forever without it.
+    needs_zlp: Bool
+    // The device state after this transfer completes.
+    next_state: Int
+
+// Source code for a step that sends no data.
+pub const USB_SRC_NONE = 0
+// Source: the device descriptor.
+pub const USB_SRC_DEVICE_DESC = 1
+// Source: the configuration descriptor and everything that follows it.
+pub const USB_SRC_CONFIG_DESC = 2
+// Source: a string descriptor, indexed by `arg`.
+pub const USB_SRC_STRING_DESC = 3
+// Source: the binary object store.
+pub const USB_SRC_BOS_DESC = 4
+// Source: the two status bytes GET_STATUS answers.  Their content is
+// in `arg`, so a driver sends them without a buffer.
+pub const USB_SRC_STATUS_WORD = 5
+// Source: one byte, in `arg` — what GET_CONFIGURATION and
+// GET_INTERFACE answer.
+pub const USB_SRC_ONE_BYTE = 6
+// Source: the device qualifier descriptor.
+pub const USB_SRC_QUALIFIER_DESC = 7
+
+// ── The machine ──────────────────────────────────────────────────────
+
+// The device's control-transfer state: what state it is in, what
+// address and configuration it has adopted, and the control
+// endpoint's packet size, which is what decides `needs_zlp`.
+pub @value
+struct UsbCtl
+    // One of the `USB_STATE_*` codes.
+    state: Int
+    // The address the device has adopted, 0 in the default state.
+    address: Int
+    // The configuration value selected, 0 when unconfigured.
+    configuration: Int
+    // The control endpoint's maximum packet size.
+    max_packet0: Int
+    // Whether the host has enabled remote wakeup with SET_FEATURE.
+    remote_wakeup: Bool
+    // Whether the device told the host it is self-powered, which is
+    // one of the two bits GET_STATUS answers.
+    self_powered: Bool
+
+// A device in the default state — reset seen, answering on address 0 —
+// with a control endpoint of `max_packet0` bytes.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let c = usbctl.control(64)
+//     println("${usbctl.address(c)}")   // 0
+// ```
+pub fn control(max_packet0: Int) -> UsbCtl []
+    todo("usb-nv.usbctl.control")
+
+// The device state.
+pub fn state(c: UsbCtl) -> Int []
+    todo("usb-nv.usbctl.state")
+
+// The address the device has adopted.
+pub fn address(c: UsbCtl) -> Int []
+    todo("usb-nv.usbctl.address")
+
+// The configuration value selected, or 0.
+pub fn configuration(c: UsbCtl) -> Int []
+    todo("usb-nv.usbctl.configuration")
+
+// The control endpoint's maximum packet size.
+pub fn max_packet0(c: UsbCtl) -> Int []
+    todo("usb-nv.usbctl.max_packet0")
+
+// Whether remote wakeup is enabled.
+pub fn remote_wakeup(c: UsbCtl) -> Bool []
+    todo("usb-nv.usbctl.remote_wakeup")
+
+// Whether the device reports itself self-powered.
+pub fn self_powered(c: UsbCtl) -> Bool []
+    todo("usb-nv.usbctl.self_powered")
+
+// Say the device is self-powered, which changes what GET_STATUS
+// answers and nothing else.
+pub fn with_self_powered(c: UsbCtl, on: Bool) -> UsbCtl []
+    todo("usb-nv.usbctl.with_self_powered")
+
+// Take a bus reset: back to the default state, address 0, no
+// configuration, remote wakeup off.
+//
+// A reset is not a power cycle and the distinction matters: the packet
+// size the device was built with survives it, and so does whether it
+// is self-powered.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let c = usbctl.reset(usbctl.control(64))
+//     println("${usbctl.state(c)}")
+// ```
+pub fn reset(c: UsbCtl) -> UsbCtl []
+    todo("usb-nv.usbctl.reset")
+
+// Take a setup packet and answer what the driver should do.
+//
+// The one function this package is for.  `descriptor_len` is how long
+// the descriptor named by the request actually is, which the caller
+// knows and this machine does not — it is what makes the truncation
+// and the zero-length-packet decision computable here rather than in
+// four drivers.  Pass 0 for a request with no descriptor behind it.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let c = usbctl.control(64)
+//     let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, 7, 0, 0)
+//     let step = usbctl.step(c, s, 0)
+//     println("${usbctl.step_deferred(step)}")   // 6, USB_ACT_SET_ADDRESS
+// ```
+pub fn step(c: UsbCtl, s: UsbSetup, descriptor_len: Int) -> UsbCtlStep []
+    todo("usb-nv.usbctl.step")
+
+// The state after a step's status stage has completed, which is what a
+// driver stores.
+//
+// Separate from `step` because a `@value` struct cannot be a tuple
+// element (SPEC § 14.5), so one call cannot answer both the action and
+// the new state — the same constraint pid-nv's readers come from.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let c = usbctl.control(64)
+//     let s = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, 7, 0, 0)
+//     println("${usbctl.address(usbctl.advance(c, s, usbctl.step(c, s, 0)))}")
+// ```
+pub fn advance(c: UsbCtl, s: UsbSetup, st: UsbCtlStep) -> UsbCtl []
+    todo("usb-nv.usbctl.advance")
+
+// What to do now.
+pub fn step_action(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_action")
+
+// What to do once the status stage has completed.
+//
+// `USB_ACT_SET_ADDRESS` or `USB_ACT_NONE`.  A driver that performs
+// this at the same moment as `step_action` has written the enumeration
+// bug this type exists to make unwritable.
+pub fn step_deferred(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_deferred")
+
+// The action's argument.
+pub fn step_arg(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_arg")
+
+// The action's second argument.
+pub fn step_arg2(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_arg2")
+
+// How many bytes the data stage carries.
+pub fn step_len(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_len")
+
+// Which bytes a data-in stage sends.
+pub fn step_source(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_source")
+
+// Whether a zero-length packet must follow the data stage.
+//
+// True when the data stage is shorter than wLength AND its length is a
+// whole multiple of the control endpoint's packet size.  Both halves
+// are needed: a short last packet is itself the end of the transfer,
+// and a transfer that filled wLength exactly is over.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let c = usbctl.control(64)
+//     let s = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0200, 0, 255)
+//     println("${usbctl.step_needs_zlp(usbctl.step(c, s, 64))}")   // true
+// ```
+pub fn step_needs_zlp(st: UsbCtlStep) -> Bool []
+    todo("usb-nv.usbctl.step_needs_zlp")
+
+// The device state this transfer moves to.
+pub fn step_next_state(st: UsbCtlStep) -> Int []
+    todo("usb-nv.usbctl.step_next_state")
+
+// An action code in words, for a log.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     println(usbctl.action_name(usbctl.USB_ACT_SET_ADDRESS))
+// ```
+pub fn action_name(action: Int) -> Str []
+    todo("usb-nv.usbctl.action_name")
+
+// A device state code in words.
+pub fn state_name(state: Int) -> Str []
+    todo("usb-nv.usbctl.state_name")
+
+// The two bytes GET_STATUS answers for the device: self-powered in bit
+// 0 and remote wakeup in bit 1, as one little-endian word.
+pub fn status_word(c: UsbCtl) -> Int []
+    todo("usb-nv.usbctl.status_word")
+
+// Whether a request is one this machine handles itself, as against one
+// it hands to a class with `USB_ACT_CLASS_REQUEST`.
+//
+// ```novo
+// use usbctl
+//
+// fn main() [io]
+//     let s = usbctl.setup(0x21, 0x20, 0, 0, 7)
+//     println("${usbctl.is_standard(s)}")   // false — a class request
+// ```
+pub fn is_standard(s: UsbSetup) -> Bool []
+    todo("usb-nv.usbctl.is_standard")

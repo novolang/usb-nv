@@ -1,0 +1,653 @@
+// usbdesc.nv — the standard descriptors as values that answer their
+// own wire bytes.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A DESCRIPTOR ANSWERS ITS BYTES ONE AT A TIME, and that is the whole
+// reason this module builds for a microcontroller.  The obvious shape
+// is `to_bytes(d) -> [u8]`, and on a device it is the wrong one twice
+// over: it allocates a buffer per GET_DESCRIPTOR, and a full-speed
+// control endpoint moves eight bytes at a time, so the buffer is
+// immediately chopped up again.  `device_desc_byte(d, i)` needs no
+// buffer at all — a firmware fills the endpoint FIFO straight out of
+// it, and a host tool that wants the whole thing loops.
+//
+// THE FIRST TWO BYTES ARE NOT FIELDS.  Every USB descriptor begins
+// with `bLength` and `bDescriptorType`, and both are determined by
+// which descriptor it is: an endpoint descriptor is seven bytes and
+// type 5, always.  Carrying them as fields would let a caller build a
+// descriptor that disagrees with itself, and a device whose
+// configuration descriptor has the wrong `wTotalLength` is a device
+// that enumerates on one host and not another.  So the lengths are
+// constants and the byte faces supply them.
+//
+// WHAT IS AND IS NOT A `@value` HERE.  The four fixed-size standard
+// descriptors are `@value` structs of small integers, so a firmware
+// holds a whole configuration in its own stack frame.  The string
+// descriptors are NOT: their content is text, a `@value` struct cannot
+// own a buffer (SPEC § 14.3), and a string descriptor is the one
+// standard descriptor whose length depends on what is in it.  They are
+// functions over a `Str` instead, which costs a caller nothing and
+// keeps the record types honest.
+
+// ── Descriptor types (USB 2.0 table 9-5, and the later additions) ─────
+
+// bDescriptorType for a device descriptor.
+pub const USB_DESC_DEVICE = 0x01
+// bDescriptorType for a configuration descriptor.
+pub const USB_DESC_CONFIGURATION = 0x02
+// bDescriptorType for a string descriptor.
+pub const USB_DESC_STRING = 0x03
+// bDescriptorType for an interface descriptor.
+pub const USB_DESC_INTERFACE = 0x04
+// bDescriptorType for an endpoint descriptor.
+pub const USB_DESC_ENDPOINT = 0x05
+// bDescriptorType for a device qualifier — a full-speed device's
+// answer about what it would be at high speed.
+pub const USB_DESC_DEVICE_QUALIFIER = 0x06
+// bDescriptorType for an other-speed configuration.
+pub const USB_DESC_OTHER_SPEED_CONFIG = 0x07
+// bDescriptorType for an interface association descriptor, which is
+// what binds CDC-ACM's two interfaces into one function.
+pub const USB_DESC_INTERFACE_ASSOCIATION = 0x0B
+// bDescriptorType for a binary object store — the container the
+// WebUSB and MS OS 2.0 platform capabilities live in.  `usbbos` is
+// the module for it.
+pub const USB_DESC_BOS = 0x0F
+// bDescriptorType for a device capability inside a BOS.
+pub const USB_DESC_DEVICE_CAPABILITY = 0x10
+
+// ── The byte counts, which are what makes them constants ─────────────
+
+// bLength of a device descriptor: 18.
+pub const USB_DEVICE_DESC_LEN = 18
+// bLength of a configuration descriptor: 9.  NOT `wTotalLength`, which
+// covers the interfaces and endpoints that follow it.
+pub const USB_CONFIG_DESC_LEN = 9
+// bLength of an interface descriptor: 9.
+pub const USB_INTERFACE_DESC_LEN = 9
+// bLength of an endpoint descriptor: 7.
+pub const USB_ENDPOINT_DESC_LEN = 7
+// bLength of an interface association descriptor: 8.
+pub const USB_IAD_LEN = 8
+
+// ── Device classes, as they appear in a descriptor ───────────────────
+
+// bDeviceClass 0x00: the class is declared per interface rather than
+// per device.  What a HID device says.
+pub const USB_CLASS_PER_INTERFACE = 0x00
+// The communications device class — CDC-ACM's control interface.
+pub const USB_CLASS_CDC = 0x02
+// The human interface device class.
+pub const USB_CLASS_HID = 0x03
+// The mass storage class.
+pub const USB_CLASS_MASS_STORAGE = 0x08
+// The hub class.
+pub const USB_CLASS_HUB = 0x09
+// CDC's data interface class, which is a different number from the
+// control interface's and is the detail a first CDC implementation
+// most often gets wrong.
+pub const USB_CLASS_CDC_DATA = 0x0A
+// bDeviceClass 0xEF: a composite device described by interface
+// association descriptors.  With subclass 0x02 and protocol 0x01 it is
+// the "multi-interface function" triple CDC-ACM needs on Windows.
+pub const USB_CLASS_MISC = 0xEF
+// The device firmware upgrade class.  dfu-nv is the package for it.
+pub const USB_CLASS_APP_SPECIFIC = 0xFE
+// A vendor-defined class.
+pub const USB_CLASS_VENDOR = 0xFF
+
+// ── Endpoint attributes (USB 2.0 § 9.6.6) ────────────────────────────
+
+// bmAttributes transfer type: control.
+pub const USB_XFER_CONTROL = 0
+// bmAttributes transfer type: isochronous.
+pub const USB_XFER_ISOCHRONOUS = 1
+// bmAttributes transfer type: bulk.
+pub const USB_XFER_BULK = 2
+// bmAttributes transfer type: interrupt.
+pub const USB_XFER_INTERRUPT = 3
+
+// The bit in an endpoint address that says the endpoint moves data
+// towards the host.
+pub const USB_ENDPOINT_IN = 0x80
+
+// ── Configuration attributes (USB 2.0 § 9.6.3) ───────────────────────
+
+// The bit that is reserved and must be set in every bmAttributes.  A
+// configuration descriptor with it clear is refused by some hosts and
+// ignored by others, which is the worst kind of bug to own.
+pub const USB_CONFIG_ATTR_RESERVED = 0x80
+// The device draws no current from the bus.
+pub const USB_CONFIG_ATTR_SELF_POWERED = 0x40
+// The device can ask the host to resume the bus.
+pub const USB_CONFIG_ATTR_REMOTE_WAKEUP = 0x20
+
+// ── Speeds, which decide what a descriptor is allowed to say ─────────
+
+// 1.5 Mbit/s.
+pub const USB_SPEED_LOW = 1
+// 12 Mbit/s — what an nRF52840 and an RP2040 do.
+pub const USB_SPEED_FULL = 2
+// 480 Mbit/s.
+pub const USB_SPEED_HIGH = 3
+
+// ── The device descriptor ────────────────────────────────────────────
+
+// The eighteen bytes a host reads first.
+//
+// `bLength` and `bDescriptorType` are not fields: they are
+// `USB_DEVICE_DESC_LEN` and `USB_DESC_DEVICE` and nothing else.
+//
+// `bcd_usb` is binary-coded decimal — 0x0200 is USB 2.0, 0x0210 is the
+// value a device must claim before a host will ask it for a BOS.
+pub @value
+struct UsbDeviceDesc
+    // The USB release the device speaks, in BCD.
+    bcd_usb: Int
+    // bDeviceClass.  `USB_CLASS_PER_INTERFACE` for a device whose
+    // interfaces carry the class.
+    device_class: Int
+    // bDeviceSubClass.
+    device_sub_class: Int
+    // bDeviceProtocol.
+    device_protocol: Int
+    // The control endpoint's packet size: 8, 16, 32 or 64, and 64 for
+    // any high-speed device.
+    max_packet_size0: Int
+    // idVendor.
+    id_vendor: Int
+    // idProduct.
+    id_product: Int
+    // bcdDevice — the product's own version, in BCD.
+    bcd_device: Int
+    // The string index of the manufacturer name, or 0 for none.
+    i_manufacturer: Int
+    // The string index of the product name, or 0 for none.
+    i_product: Int
+    // The string index of the serial number, or 0 for none.
+    i_serial_number: Int
+    // bNumConfigurations, which is 1 for almost every device.
+    num_configurations: Int
+
+// Build a device descriptor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let d = usbdesc.device_desc(0x0200, usbdesc.USB_CLASS_PER_INTERFACE, 0, 0,
+//                                 64, 0x1209, 0x0001, 0x0100, 1, 2, 3, 1)
+//     println("${usbdesc.id_vendor(d)}")
+// ```
+pub fn device_desc(bcd_usb: Int, device_class: Int, device_sub_class: Int, device_protocol: Int,
+                   max_packet_size0: Int, id_vendor: Int, id_product: Int, bcd_device: Int,
+                   i_manufacturer: Int, i_product: Int, i_serial_number: Int,
+                   num_configurations: Int) -> UsbDeviceDesc []
+    todo("usb-nv.usbdesc.device_desc")
+
+// The USB release, in BCD.
+pub fn bcd_usb(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.bcd_usb")
+
+// bDeviceClass.
+pub fn device_class(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.device_class")
+
+// bDeviceSubClass.
+pub fn device_sub_class(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.device_sub_class")
+
+// bDeviceProtocol.
+pub fn device_protocol(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.device_protocol")
+
+// The control endpoint's maximum packet size.
+pub fn max_packet_size0(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.max_packet_size0")
+
+// idVendor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let d = usbdesc.device_desc(0x0200, 0, 0, 0, 64, 0x1209, 1, 0x0100, 0, 0, 0, 1)
+//     println("${usbdesc.id_vendor(d)}")
+// ```
+pub fn id_vendor(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.id_vendor")
+
+// idProduct.
+pub fn id_product(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.id_product")
+
+// bcdDevice.
+pub fn bcd_device(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.bcd_device")
+
+// The manufacturer string index.
+pub fn i_manufacturer(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.i_manufacturer")
+
+// The product string index.
+pub fn i_product(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.i_product")
+
+// The serial-number string index.
+pub fn i_serial_number(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.i_serial_number")
+
+// bNumConfigurations.
+pub fn num_configurations(d: UsbDeviceDesc) -> Int []
+    todo("usb-nv.usbdesc.num_configurations")
+
+// The `i`-th wire byte of a device descriptor, little-endian
+// throughout, or 0 past the end.
+//
+// The function a firmware fills its endpoint FIFO from.  Index 0 is
+// `USB_DEVICE_DESC_LEN` and index 1 is `USB_DESC_DEVICE`, because
+// those two bytes are the descriptor's identity rather than its
+// content.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let d = usbdesc.device_desc(0x0200, 0, 0, 0, 64, 0x1209, 1, 0x0100, 0, 0, 0, 1)
+//     println("${usbdesc.device_desc_byte(d, 0)}")   // 18
+// ```
+pub fn device_desc_byte(d: UsbDeviceDesc, i: Int) -> Int []
+    todo("usb-nv.usbdesc.device_desc_byte")
+
+// Whether the descriptor's own fields are consistent with the
+// specification: a BCD release that is really BCD, a control packet
+// size of 8, 16, 32 or 64, and at least one configuration.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let d = usbdesc.device_desc(0x0200, 0, 0, 0, 64, 0x1209, 1, 0x0100, 0, 0, 0, 1)
+//     println("${usbdesc.device_desc_ok(d)}")
+// ```
+pub fn device_desc_ok(d: UsbDeviceDesc) -> Bool []
+    todo("usb-nv.usbdesc.device_desc_ok")
+
+// Why a device descriptor is not usable, or nothing.
+//
+// The refusal beside the predicate, for the same reason `pidtune` has
+// one: a `@value` struct cannot be a `Result` payload (SPEC § 14.5),
+// so a constructor cannot fail and the check has to be its own call.
+pub fn check_device_desc(d: UsbDeviceDesc) -> ?UsbError []
+    todo("usb-nv.usbdesc.check_device_desc")
+
+// ── The configuration descriptor ─────────────────────────────────────
+
+// The nine bytes that head a configuration, and the numbers a host
+// reads out of them before it chooses one.
+//
+// `total_length` is `wTotalLength`: this descriptor plus every
+// interface, endpoint and class descriptor that follows it in the same
+// GET_DESCRIPTOR response.  It is a field rather than something
+// computed here because what follows is the caller's: a device stack
+// that insisted on laying out the whole configuration would have to own
+// the list, and a `@value` struct cannot own one.
+pub @value
+struct UsbConfigDesc
+    // wTotalLength — the whole configuration, this header included.
+    total_length: Int
+    // bNumInterfaces.
+    num_interfaces: Int
+    // bConfigurationValue, the number SET_CONFIGURATION selects.  It
+    // is never 0: 0 means "unconfigured".
+    configuration_value: Int
+    // The string index describing this configuration, or 0.
+    i_configuration: Int
+    // bmAttributes.  `USB_CONFIG_ATTR_RESERVED` must be set.
+    attributes: Int
+    // bMaxPower in 2 mA units — 50 means 100 mA.
+    max_power: Int
+
+// Build a configuration descriptor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let c = usbdesc.config_desc(67, 2, 1, 0,
+//                                 usbdesc.USB_CONFIG_ATTR_RESERVED, 50)
+//     println("${usbdesc.max_power_ma(c)}")   // 100
+// ```
+pub fn config_desc(total_length: Int, num_interfaces: Int, configuration_value: Int,
+                   i_configuration: Int, attributes: Int, max_power: Int) -> UsbConfigDesc []
+    todo("usb-nv.usbdesc.config_desc")
+
+// wTotalLength.
+pub fn total_length(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.total_length")
+
+// bNumInterfaces.
+pub fn num_interfaces(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.num_interfaces")
+
+// bConfigurationValue.
+pub fn configuration_value(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.configuration_value")
+
+// The configuration's string index.
+pub fn i_configuration(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.i_configuration")
+
+// bmAttributes.
+pub fn config_attributes(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.config_attributes")
+
+// bMaxPower, in the descriptor's own 2 mA units.
+pub fn max_power_units(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.max_power_units")
+
+// bMaxPower in milliamps, which is what a datasheet and a power budget
+// are written in.
+//
+// The unit is the field's most reliable source of error — a
+// configuration that means to draw 500 mA and writes 500 asks for an
+// ampere, and the host that refuses it is right.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let c = usbdesc.config_desc(67, 2, 1, 0, 0x80, 250)
+//     println("${usbdesc.max_power_ma(c)}")   // 500
+// ```
+pub fn max_power_ma(c: UsbConfigDesc) -> Int []
+    todo("usb-nv.usbdesc.max_power_ma")
+
+// Whether the configuration draws no bus current.
+pub fn is_self_powered(c: UsbConfigDesc) -> Bool []
+    todo("usb-nv.usbdesc.is_self_powered")
+
+// Whether the configuration asks for remote wakeup.
+pub fn wants_remote_wakeup(c: UsbConfigDesc) -> Bool []
+    todo("usb-nv.usbdesc.wants_remote_wakeup")
+
+// The `i`-th wire byte of a configuration descriptor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let c = usbdesc.config_desc(67, 2, 1, 0, 0x80, 50)
+//     println("${usbdesc.config_desc_byte(c, 1)}")   // 2, USB_DESC_CONFIGURATION
+// ```
+pub fn config_desc_byte(c: UsbConfigDesc, i: Int) -> Int []
+    todo("usb-nv.usbdesc.config_desc_byte")
+
+// Why a configuration descriptor is not usable, or nothing.
+pub fn check_config_desc(c: UsbConfigDesc) -> ?UsbError []
+    todo("usb-nv.usbdesc.check_config_desc")
+
+// ── The interface descriptor ─────────────────────────────────────────
+
+// Nine bytes naming one interface and the class that speaks for it.
+pub @value
+struct UsbInterfaceDesc
+    // bInterfaceNumber, counted from 0 inside the configuration.
+    interface_number: Int
+    // bAlternateSetting.
+    alternate_setting: Int
+    // bNumEndpoints, NOT counting endpoint 0.
+    num_endpoints: Int
+    // bInterfaceClass.
+    interface_class: Int
+    // bInterfaceSubClass.
+    interface_sub_class: Int
+    // bInterfaceProtocol.
+    interface_protocol: Int
+    // The string index naming this interface, or 0.
+    i_interface: Int
+
+// Build an interface descriptor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let i = usbdesc.interface_desc(0, 0, 1, usbdesc.USB_CLASS_CDC, 2, 1, 0)
+//     println("${usbdesc.interface_number(i)}")
+// ```
+pub fn interface_desc(interface_number: Int, alternate_setting: Int, num_endpoints: Int,
+                      interface_class: Int, interface_sub_class: Int, interface_protocol: Int,
+                      i_interface: Int) -> UsbInterfaceDesc []
+    todo("usb-nv.usbdesc.interface_desc")
+
+// bInterfaceNumber.
+pub fn interface_number(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.interface_number")
+
+// bAlternateSetting.
+pub fn alternate_setting(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.alternate_setting")
+
+// bNumEndpoints, endpoint 0 excluded.
+pub fn num_endpoints(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.num_endpoints")
+
+// bInterfaceClass.
+pub fn interface_class(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.interface_class")
+
+// bInterfaceSubClass.
+pub fn interface_sub_class(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.interface_sub_class")
+
+// bInterfaceProtocol.
+pub fn interface_protocol(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.interface_protocol")
+
+// The interface's string index.
+pub fn i_interface(i: UsbInterfaceDesc) -> Int []
+    todo("usb-nv.usbdesc.i_interface")
+
+// The `i`-th wire byte of an interface descriptor.
+pub fn interface_desc_byte(d: UsbInterfaceDesc, i: Int) -> Int []
+    todo("usb-nv.usbdesc.interface_desc_byte")
+
+// ── The endpoint descriptor ──────────────────────────────────────────
+
+// Seven bytes describing one endpoint: which way it points, how it
+// moves data, how much of it at a time, and how often the host should
+// ask.
+pub @value
+struct UsbEndpointDesc
+    // bEndpointAddress: the number in the low four bits and
+    // `USB_ENDPOINT_IN` set for an IN endpoint.
+    endpoint_address: Int
+    // bmAttributes: the transfer type in the low two bits.
+    attributes: Int
+    // wMaxPacketSize.
+    max_packet_size: Int
+    // bInterval, in frames for full speed and in 2^(n-1)
+    // microframes for high speed.
+    interval: Int
+
+// Build an endpoint descriptor.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     let e = usbdesc.endpoint_desc(usbdesc.endpoint_in(1),
+//                                   usbdesc.USB_XFER_BULK, 64, 0)
+//     println("${usbdesc.endpoint_number(usbdesc.endpoint_address(e))}")
+// ```
+pub fn endpoint_desc(endpoint_address: Int, attributes: Int, max_packet_size: Int,
+                     interval: Int) -> UsbEndpointDesc []
+    todo("usb-nv.usbdesc.endpoint_desc")
+
+// bEndpointAddress.
+pub fn endpoint_address(e: UsbEndpointDesc) -> Int []
+    todo("usb-nv.usbdesc.endpoint_address")
+
+// bmAttributes.
+pub fn endpoint_attributes(e: UsbEndpointDesc) -> Int []
+    todo("usb-nv.usbdesc.endpoint_attributes")
+
+// wMaxPacketSize.
+pub fn max_packet_size(e: UsbEndpointDesc) -> Int []
+    todo("usb-nv.usbdesc.max_packet_size")
+
+// bInterval.
+pub fn interval(e: UsbEndpointDesc) -> Int []
+    todo("usb-nv.usbdesc.interval")
+
+// The transfer type in the low two bits of bmAttributes.
+pub fn transfer_type(e: UsbEndpointDesc) -> Int []
+    todo("usb-nv.usbdesc.transfer_type")
+
+// The `i`-th wire byte of an endpoint descriptor.
+pub fn endpoint_desc_byte(e: UsbEndpointDesc, i: Int) -> Int []
+    todo("usb-nv.usbdesc.endpoint_desc_byte")
+
+// ── Endpoint addresses, which are one byte doing two jobs ────────────
+
+// The address of IN endpoint `n` — data towards the host.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     println("${usbdesc.endpoint_in(1)}")   // 129
+// ```
+pub fn endpoint_in(n: Int) -> Int []
+    todo("usb-nv.usbdesc.endpoint_in")
+
+// The address of OUT endpoint `n` — data from the host.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     println("${usbdesc.endpoint_out(1)}")   // 1
+// ```
+pub fn endpoint_out(n: Int) -> Int []
+    todo("usb-nv.usbdesc.endpoint_out")
+
+// The endpoint number inside an address, 0 to 15.
+pub fn endpoint_number(address: Int) -> Int []
+    todo("usb-nv.usbdesc.endpoint_number")
+
+// Whether an address names an IN endpoint.
+//
+// IN and OUT are named FROM THE HOST, so an IN endpoint is one the
+// DEVICE writes.  Getting this backwards is the first bug in every
+// device stack, and it is why the two constructors above exist rather
+// than a `Bool` argument.
+pub fn endpoint_is_in(address: Int) -> Bool []
+    todo("usb-nv.usbdesc.endpoint_is_in")
+
+// Whether `size` is a packet size the specification allows for
+// `transfer_type` at `speed`.
+//
+// The rule a host enforces and a device stack rarely states: a
+// full-speed bulk endpoint is 8, 16, 32 or 64 bytes and nothing else,
+// a high-speed bulk endpoint is exactly 512, a full-speed interrupt
+// endpoint is at most 64, and a full-speed isochronous one at most
+// 1023.  A descriptor that asks for 256 on a full-speed bulk endpoint
+// enumerates and then moves no data, which is a much harder failure to
+// read than a refusal.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     println("${usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 64)}")
+// ```
+pub fn max_packet_ok(transfer_type: Int, speed: Int, size: Int) -> Bool []
+    todo("usb-nv.usbdesc.max_packet_ok")
+
+// ── The interface association descriptor ─────────────────────────────
+
+// Eight bytes binding a run of interfaces into one function, which is
+// what stops a CDC-ACM device from looking like two unrelated
+// interfaces to a host.
+pub @value
+struct UsbIadDesc
+    // The first interface in the run.
+    first_interface: Int
+    // How many interfaces the run covers.
+    interface_count: Int
+    // bFunctionClass.
+    function_class: Int
+    // bFunctionSubClass.
+    function_sub_class: Int
+    // bFunctionProtocol.
+    function_protocol: Int
+    // The string index naming the function, or 0.
+    i_function: Int
+
+// Build an interface association descriptor.
+pub fn iad(first_interface: Int, interface_count: Int, function_class: Int, function_sub_class: Int,
+           function_protocol: Int, i_function: Int) -> UsbIadDesc []
+    todo("usb-nv.usbdesc.iad")
+
+// The first interface the association covers.
+pub fn iad_first_interface(a: UsbIadDesc) -> Int []
+    todo("usb-nv.usbdesc.iad_first_interface")
+
+// How many interfaces it covers.
+pub fn iad_interface_count(a: UsbIadDesc) -> Int []
+    todo("usb-nv.usbdesc.iad_interface_count")
+
+// The `i`-th wire byte of an interface association descriptor.
+pub fn iad_byte(a: UsbIadDesc, i: Int) -> Int []
+    todo("usb-nv.usbdesc.iad_byte")
+
+// ── String descriptors, which are not records ────────────────────────
+
+// The length in bytes of the string descriptor for `s`: two bytes of
+// header plus the text in UTF-16LE.
+//
+// A function over a `Str` rather than a `@value` record, because a
+// string descriptor's length is its content's and a `@value` struct
+// cannot own a buffer.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     println("${usbdesc.string_desc_len("novo")}")   // 10
+// ```
+pub fn string_desc_len(s: Str) -> Int []
+    todo("usb-nv.usbdesc.string_desc_len")
+
+// The `i`-th wire byte of the string descriptor for `s`.
+//
+// Byte 0 is the length, byte 1 is `USB_DESC_STRING`, and the rest is
+// the text in UTF-16LE.  A character outside the basic multilingual
+// plane becomes a surrogate pair, which is two code units and four
+// bytes — so the length is not twice the character count, and a
+// descriptor whose bLength assumed it truncates in front of a host.
+pub fn string_desc_byte(s: Str, i: Int) -> Int []
+    todo("usb-nv.usbdesc.string_desc_byte")
+
+// The length of string descriptor 0, which is the list of language
+// identifiers rather than any text: 2 plus two bytes per language.
+pub fn lang_desc_len(count: Int) -> Int []
+    todo("usb-nv.usbdesc.lang_desc_len")
+
+// The `i`-th wire byte of a one-language string descriptor 0.
+//
+// ```novo
+// use usbdesc
+//
+// fn main() [io]
+//     println("${usbdesc.lang_desc_byte(usbdesc.USB_LANG_EN_US, 0)}")   // 4
+// ```
+pub fn lang_desc_byte(lang_id: Int, i: Int) -> Int []
+    todo("usb-nv.usbdesc.lang_desc_byte")
+
+// The language identifier for US English, 0x0409 — the one almost
+// every device declares and the only one many hosts ask for.
+pub const USB_LANG_EN_US = 0x0409

@@ -1,0 +1,219 @@
+// embedded_probe.nv — this package's device claim, as a program that
+// either builds for a Cortex-M or does not.
+//
+// It is not a test.  `scripts/shard_audit.sh`'s `core-embedded` row
+// copies it and the modules it names into a package of its own and
+// runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.
+//
+// WHAT THE CLAIM COVERS: the descriptors and the control machine —
+// `usbdesc` and `usbctl` — which are the two modules a device runs on
+// every enumeration, in an interrupt, before any application code has
+// started.  A USB device stack is not a library a firmware calls
+// occasionally; it is the thing that answers the host inside the USBD
+// interrupt handler, and a descriptor that had to be assembled into a
+// buffer first would be assembled there.  That is why the descriptors
+// answer their bytes one at a time and why the whole enumeration path
+// is `@value` structs of machine words in the caller's own frame.
+//
+// WHAT IS DELIBERATELY OUT.  `usbenum` is `host` and named in the
+// manifest's `host_modules`, so the audit leaves it behind — one
+// host-only function anywhere in a compilation unit is an undefined
+// symbol at embedded link time whether or not the firmware calls it.
+// `usbxfer` is the host's view of the bus and a device has no use for
+// it.  `usbcdc`, `usbhid` and `usbbos` are `core` and would build, and
+// they are not named here because the claim this file makes should be
+// the claim the package's own README makes: enumeration runs on a
+// device.  A product that adds CDC adds one `use` line.
+//
+// THE PROBE NAMES ONLY THIS PACKAGE'S TYPES, which costs nothing here:
+// usb-nv has no dependencies at all.
+//
+// WHAT THE TIER ACTUALLY CHECKS AT 0.0.1 is narrower than it will be.
+// Every body under `src/` is a `todo()`, so what links today is the
+// SIGNATURES and the types: `@value` structs of `Int` and `Bool`, in
+// and out, and no allocator anywhere in the shape.  There is no
+// arithmetic in the binary yet, so this probe does not prove a
+// descriptor is emitted without allocating; it proves that nothing in
+// the shape of the surface needs an allocator or a host.  Keeping it
+// green once the bodies land is a named cost of the implementation
+// step.
+
+use usbdesc
+use usbctl
+
+// A composite device's own numbers, as a firmware holds them: the
+// pid.codes vendor identifier 0x1209, a 64-byte control endpoint,
+// one configuration drawing 100 mA, and a bulk IN endpoint 1.
+const VID: Int = 0x1209
+const PID: Int = 0x0001
+const EP0_SIZE: Int = 64
+const POWER_UNITS: Int = 50
+const NEW_ADDRESS: Int = 7
+
+// Every answer this probe checks, folded into one number so a single
+// comparison decides the run.  A firmware image has one line of
+// output; making it depend on all of them is what stops a passing run
+// from meaning "the first call linked".
+@tier(embedded)
+fn score() -> Int
+    var n = 0
+
+    // ── The descriptors, as a device answers GET_DESCRIPTOR ──────────
+    let dev = usbdesc.device_desc(0x0200, usbdesc.USB_CLASS_PER_INTERFACE,
+                                 0, 0, EP0_SIZE, VID, PID, 0x0100, 1, 2, 3, 1)
+    if usbdesc.id_vendor(dev) == VID
+        n = n + 1
+    if usbdesc.id_product(dev) == PID
+        n = n + 1
+    if usbdesc.max_packet_size0(dev) == EP0_SIZE
+        n = n + 1
+    // Byte 0 is the length and byte 1 the type, because neither is a
+    // field — the two bytes that identify a descriptor are its
+    // identity and not its content.
+    if usbdesc.device_desc_byte(dev, 0) == usbdesc.USB_DEVICE_DESC_LEN
+        n = n + 1
+    if usbdesc.device_desc_byte(dev, 1) == usbdesc.USB_DESC_DEVICE
+        n = n + 1
+    if usbdesc.device_desc_ok(dev)
+        n = n + 1
+
+    let cfg = usbdesc.config_desc(67, 2, 1, 0,
+                                  usbdesc.USB_CONFIG_ATTR_RESERVED, POWER_UNITS)
+    // 50 units of 2 mA is 100 mA, which is the unit a power budget is
+    // written in and the field's most reliable source of error.
+    if usbdesc.max_power_ma(cfg) == 100
+        n = n + 1
+    if usbdesc.configuration_value(cfg) == 1
+        n = n + 1
+    if usbdesc.config_desc_byte(cfg, 1) == usbdesc.USB_DESC_CONFIGURATION
+        n = n + 1
+
+    let iface = usbdesc.interface_desc(0, 0, 2, usbdesc.USB_CLASS_CDC_DATA, 0, 0, 0)
+    if usbdesc.num_endpoints(iface) == 2
+        n = n + 1
+    if usbdesc.interface_desc_byte(iface, 0) == usbdesc.USB_INTERFACE_DESC_LEN
+        n = n + 1
+
+    // IN and OUT are named from the HOST, so an IN endpoint is one the
+    // device writes.  The two constructors exist so that cannot be a
+    // Bool somebody passes the wrong way round.
+    let ep_in = usbdesc.endpoint_in(1)
+    let ep_out = usbdesc.endpoint_out(1)
+    if usbdesc.endpoint_is_in(ep_in)
+        n = n + 1
+    if usbdesc.endpoint_is_in(ep_out) == false
+        n = n + 1
+    if usbdesc.endpoint_number(ep_in) == 1
+        n = n + 1
+    let ep = usbdesc.endpoint_desc(ep_in, usbdesc.USB_XFER_BULK, EP0_SIZE, 0)
+    if usbdesc.max_packet_size(ep) == EP0_SIZE
+        n = n + 1
+    if usbdesc.endpoint_desc_byte(ep, 0) == usbdesc.USB_ENDPOINT_DESC_LEN
+        n = n + 1
+    // A full-speed bulk endpoint is 8, 16, 32 or 64 bytes and nothing
+    // else; 256 enumerates and then moves no data.
+    if usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 64)
+        n = n + 1
+    if usbdesc.max_packet_ok(usbdesc.USB_XFER_BULK, usbdesc.USB_SPEED_FULL, 256) == false
+        n = n + 1
+
+    // ── The control machine, which is what this package is for ───────
+    var ctl = usbctl.control(EP0_SIZE)
+    if usbctl.state(ctl) == usbctl.USB_STATE_DEFAULT
+        n = n + 1
+    if usbctl.address(ctl) == 0
+        n = n + 1
+
+    // SET_ADDRESS: the address is adopted AFTER the status stage, so
+    // the action is deferred and the immediate action is the status
+    // stage itself.  A stack that writes the address register now
+    // answers the host from an address it is not yet listening on.
+    let sa = usbctl.setup(0x00, usbctl.USB_REQ_SET_ADDRESS, NEW_ADDRESS, 0, 0)
+    let sa_step = usbctl.step(ctl, sa, 0)
+    if usbctl.step_deferred(sa_step) == usbctl.USB_ACT_SET_ADDRESS
+        n = n + 1
+    if usbctl.step_action(sa_step) == usbctl.USB_ACT_STATUS_IN
+        n = n + 1
+    if usbctl.step_arg(sa_step) == NEW_ADDRESS
+        n = n + 1
+    ctl = usbctl.advance(ctl, sa, sa_step)
+    if usbctl.address(ctl) == NEW_ADDRESS
+        n = n + 1
+    if usbctl.state(ctl) == usbctl.USB_STATE_ADDRESS
+        n = n + 1
+
+    // GET_DESCRIPTOR for a 67-byte configuration with wLength 255:
+    // truncated to 67, and no zero-length packet, because 67 is not a
+    // whole multiple of 64.
+    let gd = usbctl.setup(0x80, usbctl.USB_REQ_GET_DESCRIPTOR, 0x0200, 0, 255)
+    let gd_step = usbctl.step(ctl, gd, 67)
+    if usbctl.step_action(gd_step) == usbctl.USB_ACT_DATA_IN
+        n = n + 1
+    if usbctl.step_len(gd_step) == 67
+        n = n + 1
+    if usbctl.step_needs_zlp(gd_step) == false
+        n = n + 1
+    if usbctl.step_source(gd_step) == usbctl.USB_SRC_CONFIG_DESC
+        n = n + 1
+    // The same request against a 64-byte descriptor DOES need one, and
+    // a host without it waits for a transfer that never ends.
+    if usbctl.step_needs_zlp(usbctl.step(ctl, gd, 64))
+        n = n + 1
+
+    // SET_CONFIGURATION moves the device to configured; the zero
+    // configuration takes it back and disables every endpoint but 0.
+    let sc = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 1, 0, 0)
+    let sc_step = usbctl.step(ctl, sc, 0)
+    if usbctl.step_action(sc_step) == usbctl.USB_ACT_SET_CONFIGURATION
+        n = n + 1
+    ctl = usbctl.advance(ctl, sc, sc_step)
+    if usbctl.state(ctl) == usbctl.USB_STATE_CONFIGURED
+        n = n + 1
+    if usbctl.configuration(ctl) == 1
+        n = n + 1
+    let sc0 = usbctl.setup(0x00, usbctl.USB_REQ_SET_CONFIGURATION, 0, 0, 0)
+    if usbctl.step_action(usbctl.step(ctl, sc0, 0)) == usbctl.USB_ACT_UNCONFIGURE
+        n = n + 1
+
+    // A class request is not this machine's, and it says so rather
+    // than stalling — CDC's SET_LINE_CODING arrives this way.
+    let cls = usbctl.setup(0x21, 0x20, 0, 0, 7)
+    if usbctl.is_standard(cls) == false
+        n = n + 1
+    if usbctl.step_action(usbctl.step(ctl, cls, 0)) == usbctl.USB_ACT_CLASS_REQUEST
+        n = n + 1
+
+    // A standard request the device does not implement is a STALL,
+    // which is the specification's "not supported" and not a fault.
+    let sd = usbctl.setup(0x00, usbctl.USB_REQ_SET_DESCRIPTOR, 0, 0, 0)
+    if usbctl.step_action(usbctl.step(ctl, sd, 0)) == usbctl.USB_ACT_STALL
+        n = n + 1
+
+    // A bus reset returns the device to address 0 and keeps the packet
+    // size it was built with.
+    ctl = usbctl.reset(ctl)
+    if usbctl.address(ctl) == 0
+        n = n + 1
+    if usbctl.max_packet0(ctl) == EP0_SIZE
+        n = n + 1
+
+    n
+
+@tier(rt)
+fn main() [hw, time]
+    bsp.board.init()
+    // 40 is the number of checks in `score` on the path a linked build
+    // takes.  The count is printed on a failure rather than only
+    // compared, so a device that disagrees with the host says HOW MANY
+    // it lost and a bisect has somewhere to start.
+    let n = score()
+    if n == 40
+        hal.uart.write("PASS: usb-embedded\n")
+    else
+        hal.uart.write("FAIL: usb-embedded\n")
+    loop
+        core.rt.sleep_ms(1000)

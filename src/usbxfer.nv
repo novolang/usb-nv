@@ -1,0 +1,220 @@
+// usbxfer.nv — the host's view of the bus: a transfer surface a
+// backend implements, and the requests written once over it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `UsbHostBackend[e]` IS THE TRAIT THAT CROSSES THE LAYER, and nothing
+// in this project implements it.  That is deliberate and it is the
+// same shape grpc-nv published: the six methods are the list of what a
+// host actually has to be able to do, written as a contract the two
+// plausible providers can both satisfy — `libusb-sys` on the bindings
+// shelf, and a future native usbfs driver that submits URBs through an
+// ioctl the language has no way to make today.  Publishing the
+// contract before either exists is what gets the request shapes and
+// the error cases reviewed while they are still cheap to change.
+//
+// THE EFFECT ROW IS THE BACKEND'S.  Every method is `[e]` and every
+// driving function is generic over the trait and charged what its
+// argument costs (SPEC § 5.6), so a caller decides what a USB tool may
+// do by deciding which backend to hand it: `[io, hw]` for a real bus,
+// `[fs]` for a recorded capture replayed from a file, and NOTHING for
+// a table in a test.  That last row is why this module is in a `core`
+// package: a package that declares a transfer surface has not
+// performed a transfer.
+//
+// A TIMEOUT IS PER TRANSFER AND NOT PER BACKEND.  A control transfer
+// to a device that is enumerating wants 5000 ms and a bulk read from
+// an idle interrupt endpoint wants 0 — wait forever — and a backend
+// with one configured timeout forces a caller to choose one of them
+// for the whole program.  So it is an argument, and 0 means no
+// deadline.
+
+// ── What a host transfer is ──────────────────────────────────────────
+
+// One device on the bus, as a backend identifies it.
+//
+// `bus` and `address` are the kernel's own numbers and they change
+// when the device is replugged; `port_path` is the chain of hub port
+// numbers from the root, packed one nibble per hop, and that one does
+// NOT change.  A tool that wants to talk to "the device in this socket"
+// across a power cycle uses the port path; one that wants "the device
+// I just enumerated" uses the address.
+pub @value
+struct UsbDeviceId
+    // The bus number.
+    bus: Int
+    // The device address on that bus.
+    address: Int
+    // The hub port chain from the root, one nibble per hop, first hop
+    // in the low nibble.
+    port_path: Int
+    // How many hops the port path holds.
+    port_depth: Int
+
+// Build a device identifier.
+//
+// ```novo
+// use usbxfer
+//
+// fn main() [io]
+//     println("${usbxfer.device_bus(usbxfer.device_id(1, 7, 0x21, 2))}")
+// ```
+pub fn device_id(bus: Int, address: Int, port_path: Int, port_depth: Int) -> UsbDeviceId []
+    todo("usb-nv.usbxfer.device_id")
+
+// The bus number.
+pub fn device_bus(d: UsbDeviceId) -> Int []
+    todo("usb-nv.usbxfer.device_bus")
+
+// The device address.
+pub fn device_address(d: UsbDeviceId) -> Int []
+    todo("usb-nv.usbxfer.device_address")
+
+// The packed hub port chain.
+pub fn device_port_path(d: UsbDeviceId) -> Int []
+    todo("usb-nv.usbxfer.device_port_path")
+
+// How many hops the port chain holds.
+pub fn device_port_depth(d: UsbDeviceId) -> Int []
+    todo("usb-nv.usbxfer.device_port_depth")
+
+// The port path as `1-4.2`, which is the spelling the kernel and every
+// tool print.
+pub fn port_path_name(d: UsbDeviceId) -> Str []
+    todo("usb-nv.usbxfer.port_path_name")
+
+// ── The trait ────────────────────────────────────────────────────────
+
+// What a host needs a backend to be able to do.
+//
+// `e` is the effect row the implementation supplies, and it is what
+// every driving function below costs.  A backend over a real bus
+// declares `[io, hw]`; one over a capture file declares `[fs]`; one
+// over a table declares nothing.
+pub trait UsbHostBackend[e]
+    // Open the device with this identifier.  The answer is the handle
+    // every other method takes.
+    fn usb_open(self, id: UsbDeviceId) -> Result<Int, UsbError> [e]
+    // Close a handle.  Calling this twice is not an error.
+    fn usb_close(self, handle: Int) -> ?UsbError [e]
+    // Take an interface away from whatever driver holds it, so this
+    // program can use it.  The method with no counterpart in the
+    // specification and no way around it: on Linux a CDC device is
+    // already bound to `cdc_acm`, and a tool that does not detach gets
+    // "resource busy" and no explanation.
+    fn usb_claim(self, handle: Int, interface: Int) -> ?UsbError [e]
+    // Give it back.  A program that exits without this leaves the
+    // kernel driver unbound until the device is replugged.
+    fn usb_release(self, handle: Int, interface: Int) -> ?UsbError [e]
+    // Perform a control transfer.  `data` is the OUT payload and is
+    // empty for an IN transfer; the answer is the IN payload, which is
+    // empty for an OUT transfer.  `timeout_ms` of 0 means no deadline.
+    fn usb_control(self, handle: Int, request_type: Int, request: Int, value: Int, index: Int, data: Bytes, timeout_ms: Int) -> Result<Bytes, UsbError> [e]
+    // Perform a bulk or interrupt transfer on `endpoint`.  The
+    // direction is the address's own bit, so one method serves both:
+    // `data` is what to send on an OUT endpoint and is ignored on an
+    // IN one, and `max` is how many bytes to accept on an IN endpoint.
+    //
+    // ONE METHOD FOR BOTH TRANSFER TYPES, because the difference
+    // between bulk and interrupt is scheduling on the wire and not
+    // anything a caller does differently — the endpoint descriptor
+    // already said which it is, and a backend that needed telling
+    // twice could disagree with it.
+    fn usb_transfer(self, handle: Int, endpoint: Int, data: Bytes, max: Int, timeout_ms: Int) -> Result<Bytes, UsbError> [e]
+
+// ── The standard requests, written once over the trait ───────────────
+
+// Fetch a descriptor.  `kind` is a `USB_DESC_*` code and `index` is
+// its index — 0 for the device descriptor, the string index for a
+// string.
+//
+// `[e]` and not `[io]`: the cost is the backend's.
+pub fn get_descriptor<B: UsbHostBackend[e]>(b: B, handle: Int, kind: Int, index: Int, lang: Int,
+                                            timeout_ms: Int) -> Result<Bytes, UsbError> [e]
+    todo("usb-nv.usbxfer.get_descriptor")
+
+// Fetch the device descriptor and decode it.
+pub fn get_device_desc<B: UsbHostBackend[e]>(b: B, handle: Int,
+                                             timeout_ms: Int) -> Result<Bytes, UsbError> [e]
+    todo("usb-nv.usbxfer.get_device_desc")
+
+// Fetch a string descriptor and decode its UTF-16LE into a `Str`.
+//
+// Index 0 is not a string — it is the language list — and this
+// function refuses it rather than answering the mojibake a host that
+// decodes it anyway produces.
+pub fn get_string<B: UsbHostBackend[e]>(b: B, handle: Int, index: Int, lang: Int,
+                                        timeout_ms: Int) -> Result<Str, UsbError> [e]
+    todo("usb-nv.usbxfer.get_string")
+
+// Select a configuration by its `bConfigurationValue`.
+pub fn set_configuration<B: UsbHostBackend[e]>(b: B, handle: Int, value: Int,
+                                               timeout_ms: Int) -> ?UsbError [e]
+    todo("usb-nv.usbxfer.set_configuration")
+
+// Select an alternate setting on an interface.
+pub fn set_interface<B: UsbHostBackend[e]>(b: B, handle: Int, interface: Int, alternate: Int,
+                                           timeout_ms: Int) -> ?UsbError [e]
+    todo("usb-nv.usbxfer.set_interface")
+
+// Clear a halted endpoint and reset its data toggle.
+//
+// Both halves, always.  A host that clears the halt without resetting
+// the toggle resumes on the wrong one and every packet after it is
+// discarded silently — which is the failure that looks like a broken
+// cable.
+pub fn clear_halt<B: UsbHostBackend[e]>(b: B, handle: Int, endpoint: Int,
+                                        timeout_ms: Int) -> ?UsbError [e]
+    todo("usb-nv.usbxfer.clear_halt")
+
+// Read from a bulk or interrupt IN endpoint.
+pub fn read_endpoint<B: UsbHostBackend[e]>(b: B, handle: Int, endpoint: Int, max: Int,
+                                           timeout_ms: Int) -> Result<Bytes, UsbError> [e]
+    todo("usb-nv.usbxfer.read_endpoint")
+
+// Write to a bulk or interrupt OUT endpoint.
+//
+// The answer is how many bytes the backend took.  A short write is not
+// a failure and the caller sends the rest — the same rule every stream
+// in this project follows.
+pub fn write_endpoint<B: UsbHostBackend[e]>(b: B, handle: Int, endpoint: Int, data: Bytes,
+                                            timeout_ms: Int) -> Result<Int, UsbError> [e]
+    todo("usb-nv.usbxfer.write_endpoint")
+
+// Write to an OUT endpoint, following it with a zero-length packet
+// when the payload is a whole multiple of the endpoint's packet size.
+//
+// The rule a bulk transfer needs and a first driver leaves out: a
+// receiver that is reading until a short packet waits forever behind a
+// 64-byte payload on a 64-byte endpoint.
+pub fn write_endpoint_zlp<B: UsbHostBackend[e]>(b: B, handle: Int, endpoint: Int, data: Bytes,
+                                                packet_size: Int,
+                                                timeout_ms: Int) -> Result<Int, UsbError> [e]
+    todo("usb-nv.usbxfer.write_endpoint_zlp")
+
+// Whether a payload of `len` bytes on an endpoint of `packet_size`
+// needs a zero-length packet after it.
+//
+// The arithmetic on its own, `[]`, so a caller with its own transfer
+// loop gets the decision without the transfer.
+//
+// ```novo
+// use usbxfer
+//
+// fn main() [io]
+//     println("${usbxfer.needs_zlp(64, 64)}")   // true
+//     println("${usbxfer.needs_zlp(63, 64)}")   // false
+// ```
+pub fn needs_zlp(len: Int, packet_size: Int) -> Bool []
+    todo("usb-nv.usbxfer.needs_zlp")
+
+// bmRequestType for a standard device request in the given direction.
+//
+// ```novo
+// use usbxfer
+//
+// fn main() [io]
+//     println("${usbxfer.request_type(true, 0, 0)}")   // 128
+// ```
+pub fn request_type(to_host: Bool, kind: Int, recipient: Int) -> Int []
+    todo("usb-nv.usbxfer.request_type")

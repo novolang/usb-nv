@@ -1,0 +1,147 @@
+// usbbos_tests.nv — the binary object store and the two platform
+// capabilities inside it.
+//
+// RED ON PURPOSE: every assertion against a FUNCTION reaches
+// `not implemented: usb-nv.usbbos.<fn>`.
+//
+// THE VECTORS ARE THE TWO PUBLISHED UUIDS.  WebUSB 1.0 § 4.1 gives
+// {3408b638-09a9-47a0-8bfd-a0768815b665} and the Microsoft OS 2.0
+// descriptors specification gives {d8dd60df-4589-4cc7-9cd2-659d9e648a9f},
+// both written as a GUID — which means the first three groups go on the
+// wire LITTLE-ENDIAN and the last two big-endian.  The assertions
+// below are that layout, and they are here because a UUID transcribed
+// straight left to right produces a device no browser and no Windows
+// will speak to, with no error anywhere that says so.
+
+use std.test
+use usbbos
+use usbdesc
+
+// Whether a check refused.  An optional is matched rather than
+// compared, so the two-line helper is what every assertion below
+// goes through.
+fn refused(e: ?UsbError) -> Bool
+    match e
+        Some(_) => true
+        None    => false
+
+@test
+fn test_the_bos_header_is_five_bytes() [io]
+    let b = usbbos.bos(57, 2)
+    test.assert_eq(usbbos.USB_BOS_DESC_LEN, 5)
+    test.assert_eq(usbbos.bos_byte(b, 0), 5)
+    test.assert_eq(usbbos.bos_byte(b, 1), 0x0F)
+    test.assert_eq(usbbos.bos_byte(b, 2), 57)
+    test.assert_eq(usbbos.bos_byte(b, 3), 0)
+    test.assert_eq(usbbos.bos_byte(b, 4), 2)
+
+@test
+fn test_a_device_must_claim_usb_two_one_before_a_host_asks_for_a_bos() [io]
+    test.case("0x0210 in bcdUSB, and a device that says 0x0200 is never asked — with no error anywhere")
+    test.assert_eq(usbbos.bos_requires_bcd_usb(), 0x0210)
+    test.assert_eq(usbbos.USB_BOS_REQUIRES_BCD_USB, 0x0210)
+
+    test.assert(refused(usbbos.check_bos(usbbos.bos(57, 2), 0x0200)))
+    test.assert(refused(usbbos.check_bos(usbbos.bos(57, 2), 0x0210)) == false)
+
+@test
+fn test_a_bos_with_no_capabilities_is_a_bos_with_no_reason_to_exist() [io]
+    test.assert(refused(usbbos.check_bos(usbbos.bos(5, 0), 0x0210)))
+
+@test
+fn test_the_webusb_uuid_is_a_guid_and_the_first_three_groups_are_little_endian() [io]
+    test.case("3408b638-09a9-47a0-8bfd-a0768815b665 as bytes: 38 b6 08 34, a9 09, a0 47, then 8b fd a0 76 88 15 b6 65")
+    test.assert_eq(usbbos.webusb_uuid_byte(0), 0x38)
+    test.assert_eq(usbbos.webusb_uuid_byte(1), 0xB6)
+    test.assert_eq(usbbos.webusb_uuid_byte(2), 0x08)
+    test.assert_eq(usbbos.webusb_uuid_byte(3), 0x34)
+    test.assert_eq(usbbos.webusb_uuid_byte(4), 0xA9)
+    test.assert_eq(usbbos.webusb_uuid_byte(5), 0x09)
+    test.assert_eq(usbbos.webusb_uuid_byte(6), 0xA0)
+    test.assert_eq(usbbos.webusb_uuid_byte(7), 0x47)
+
+    test.case("and the last two groups are NOT reversed")
+    test.assert_eq(usbbos.webusb_uuid_byte(8), 0x8B)
+    test.assert_eq(usbbos.webusb_uuid_byte(9), 0xFD)
+    test.assert_eq(usbbos.webusb_uuid_byte(15), 0x65)
+
+@test
+fn test_the_microsoft_os_uuid_is_laid_out_the_same_way() [io]
+    test.case("d8dd60df-4589-4cc7-9cd2-659d9e648a9f")
+    test.assert_eq(usbbos.msos20_uuid_byte(0), 0xDF)
+    test.assert_eq(usbbos.msos20_uuid_byte(1), 0x60)
+    test.assert_eq(usbbos.msos20_uuid_byte(2), 0xDD)
+    test.assert_eq(usbbos.msos20_uuid_byte(3), 0xD8)
+    test.assert_eq(usbbos.msos20_uuid_byte(4), 0x89)
+    test.assert_eq(usbbos.msos20_uuid_byte(5), 0x45)
+    test.assert_eq(usbbos.msos20_uuid_byte(6), 0xC7)
+    test.assert_eq(usbbos.msos20_uuid_byte(7), 0x4C)
+    test.assert_eq(usbbos.msos20_uuid_byte(8), 0x9C)
+    test.assert_eq(usbbos.msos20_uuid_byte(15), 0x9F)
+
+@test
+fn test_a_platform_capability_is_twenty_bytes_before_its_own_data() [io]
+    test.case("bLength, bDescriptorType 0x10, bDevCapabilityType 0x05, a reserved byte, and the sixteen-byte UUID")
+    test.assert_eq(usbbos.USB_PLATFORM_CAP_HEADER_LEN, 20)
+    test.assert_eq(usbbos.platform_cap_byte(4, 0), 24)
+    test.assert_eq(usbbos.platform_cap_byte(4, 1), usbdesc.USB_DESC_DEVICE_CAPABILITY)
+    test.assert_eq(usbbos.platform_cap_byte(4, 2), usbbos.USB_CAP_PLATFORM)
+    test.assert_eq(usbbos.platform_cap_byte(4, 3), 0)
+
+@test
+fn test_a_webusb_capability_is_twenty_four_bytes() [io]
+    test.case("the twenty-byte platform header plus bcdVersion, bVendorCode and iLandingPage")
+    test.assert_eq(usbbos.USB_WEBUSB_CAP_LEN, 24)
+    test.assert_eq(usbbos.webusb_cap_byte(0x22, 1, 0), 24)
+    test.assert_eq(usbbos.webusb_cap_byte(0x22, 1, 22), 0x22)
+    test.assert_eq(usbbos.webusb_cap_byte(0x22, 1, 23), 1)
+
+    test.case("a landing page of 0 is a device that can be reached and does not advertise itself")
+    test.assert_eq(usbbos.webusb_cap_byte(0x22, 0, 23), 0)
+
+@test
+fn test_a_webusb_url_descriptor_drops_the_scheme_it_encodes_as_a_byte() [io]
+    test.case("three bytes of header plus the URL WITHOUT its scheme, so https://example.com is 11 characters on the wire")
+    test.assert_eq(usbbos.webusb_url_len("example.com"), 14)
+    test.assert_eq(usbbos.webusb_url_byte(usbbos.USB_WEBUSB_SCHEME_HTTPS, "example.com", 0), 14)
+    test.assert_eq(usbbos.webusb_url_byte(usbbos.USB_WEBUSB_SCHEME_HTTPS, "example.com", 1), 3)
+    test.assert_eq(usbbos.webusb_url_byte(usbbos.USB_WEBUSB_SCHEME_HTTPS, "example.com", 2),
+                   usbbos.USB_WEBUSB_SCHEME_HTTPS)
+    test.assert_eq(usbbos.webusb_url_byte(usbbos.USB_WEBUSB_SCHEME_HTTPS, "example.com", 3), 0x65)
+
+@test
+fn test_an_ms_os_capability_is_twenty_eight_bytes() [io]
+    test.case("the platform header plus dwWindowsVersion, wMSOSDescriptorSetTotalLength, bMS_VendorCode and bAltEnumCode")
+    test.assert_eq(usbbos.USB_MSOS20_CAP_LEN, 28)
+    test.assert_eq(usbbos.msos20_cap_byte(0x21, 0x00A2, 0), 28)
+
+    test.case("the minimum Windows version is 8.1 — lower is ignored and higher excludes hosts for nothing")
+    test.assert_eq(usbbos.USB_MSOS20_WINDOWS_8_1, 0x06030000)
+    test.assert_eq(usbbos.msos20_cap_byte(0x21, 0x00A2, 20), 0x00)
+    test.assert_eq(usbbos.msos20_cap_byte(0x21, 0x00A2, 21), 0x00)
+    test.assert_eq(usbbos.msos20_cap_byte(0x21, 0x00A2, 22), 0x03)
+    test.assert_eq(usbbos.msos20_cap_byte(0x21, 0x00A2, 23), 0x06)
+
+@test
+fn test_the_winusb_compatible_id_is_six_characters_padded_to_eight() [io]
+    test.case("WINUSB, then two zero bytes — the string that asks Windows to bind WinUSB with no inf file")
+    test.assert_eq(usbbos.winusb_compatible_id_byte(0), 0x57)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(1), 0x49)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(2), 0x4E)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(3), 0x55)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(4), 0x53)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(5), 0x42)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(6), 0x00)
+    test.assert_eq(usbbos.winusb_compatible_id_byte(7), 0x00)
+
+@test
+fn test_the_bos_header_fields_read_back() [io]
+    test.case("wTotalLength covers this header AND every capability after it, which is the number a hand-laid-out BOS gets wrong")
+    let b = usbbos.bos(57, 2)
+    test.assert_eq(usbbos.bos_total_length(b), 57)
+    test.assert_eq(usbbos.bos_num_caps(b), 2)
+
+    test.case("five of header plus a 24-byte WebUSB capability and a 28-byte MS OS 2.0 one is 57")
+    test.assert_eq(usbbos.USB_BOS_DESC_LEN + usbbos.USB_WEBUSB_CAP_LEN
+                   + usbbos.USB_MSOS20_CAP_LEN,
+                   57)

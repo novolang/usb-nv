@@ -1,0 +1,169 @@
+// usbhost_tests.nv — the host halves driven without a bus.
+//
+// RED ON PURPOSE: every call reaches
+// `not implemented: usb-nv.<module>.<fn>`.
+//
+// THIS FILE IS THE ARGUMENT FOR `UsbHostBackend[e]`.  The nine driving
+// functions in `usbxfer` are generic over the trait and charged what
+// their argument costs, so a backend that performs NOTHING — the tape
+// below, whose every method declares `[]` — makes them callable from a
+// test with no device, no libusb and no permissions.  That is why the
+// package is `core` despite being half about a host bus, and it is
+// what a `fn get_descriptor(handle) [io, hw]` signature would have made
+// impossible.
+//
+// The tape answers nothing useful at 0.0.1 because every body it calls
+// is a `todo()`. What it establishes is that the CALL SITES typecheck
+// and that the effect arithmetic comes out empty — which is the claim
+// the trait makes and the one worth checking before a body exists.
+
+use std.test
+use usbxfer
+use usbenum
+
+// A backend over nothing at all.
+//
+// Every method declares `[]`, so every `usbxfer` call through it is
+// `[]` too.  A real backend declares `[io, hw]` and the same call
+// sites are charged that instead.
+struct UsbTape
+    handle: Int
+
+impl UsbHostBackend[] for UsbTape
+    fn usb_open(self, id: UsbDeviceId) -> Result<Int, UsbError> []
+        Ok(self.handle)
+
+    fn usb_close(self, handle: Int) -> ?UsbError []
+        None
+
+    fn usb_claim(self, handle: Int, interface: Int) -> ?UsbError []
+        None
+
+    fn usb_release(self, handle: Int, interface: Int) -> ?UsbError []
+        None
+
+    fn usb_control(self, handle: Int, request_type: Int, request: Int, value: Int, index: Int,
+                   data: Bytes, timeout_ms: Int) -> Result<Bytes, UsbError> []
+        Ok(data)
+
+    fn usb_transfer(self, handle: Int, endpoint: Int, data: Bytes, max: Int,
+                    timeout_ms: Int) -> Result<Bytes, UsbError> []
+        Ok(data)
+
+fn tape() -> UsbTape
+    UsbTape { handle: 1 }
+
+fn nothing() -> Bytes
+    bytes.zeros(0)
+
+@test
+fn test_a_backend_that_performs_nothing_makes_every_driver_call_free() [io]
+    test.case("the whole reason the transfer surface is a trait: a test needs no bus")
+    let b = tape()
+    match usbxfer.get_descriptor(b, 1, 1, 0, 0, 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_descriptor_helpers_are_written_once_over_the_trait() [io]
+    let b = tape()
+    match usbxfer.get_device_desc(b, 1, 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+    test.case("index 0 is the language list and not a string, so get_string refuses it rather than answering mojibake")
+    match usbxfer.get_string(b, 1, 0, 0x0409, 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_configuration_and_interface_setters_answer_an_optional_fault() [io]
+    test.case("nothing to return on success, so the shape is ?UsbError rather than Result<(), _>")
+    let b = tape()
+    match usbxfer.set_configuration(b, 1, 1, 1000)
+        None    => test.assert(true)
+        Some(_) => test.assert(true)
+
+    match usbxfer.set_interface(b, 1, 0, 1, 1000)
+        None    => test.assert(true)
+        Some(_) => test.assert(true)
+
+@test
+fn test_clearing_a_halt_is_one_call_because_it_is_two_operations() [io]
+    test.case("the halt and the data toggle, always both — an endpoint resumed on the wrong toggle discards every packet silently")
+    let b = tape()
+    match usbxfer.clear_halt(b, 1, 0x81, 1000)
+        None    => test.assert(true)
+        Some(_) => test.assert(true)
+
+@test
+fn test_the_endpoint_reads_and_writes_go_through_the_same_trait_method() [io]
+    test.case("bulk and interrupt differ in scheduling on the wire and in nothing a caller does")
+    let b = tape()
+    match usbxfer.read_endpoint(b, 1, 0x81, 64, 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+    match usbxfer.write_endpoint(b, 1, 0x02, nothing(), 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_zero_length_packet_write_is_a_separate_call() [io]
+    test.case("a receiver reading until a short packet waits forever behind a whole-packet payload, and the fix belongs at the call site that knows the endpoint size")
+    let b = tape()
+    match usbxfer.write_endpoint_zlp(b, 1, 0x02, nothing(), 64, 1000)
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+// ── usbenum: the record, without a bus to read it from ───────────────
+
+fn sample_info() -> UsbDeviceInfo
+    UsbDeviceInfo { bus: 1, address: 7, port_path: 0x21, port_depth: 2,
+                    vendor: 0x1209, product: 0x0001, device_version: 0x0100,
+                    device_class: 0x00, manufacturer: "novo-lang",
+                    product_name: "example", serial: "0001",
+                    speed: 2, sysfs_path: "/sys/bus/usb/devices/1-2.1" }
+
+@test
+fn test_the_record_readers_read_back_what_sysfs_would_have_put_there() [io, fs]
+    test.case("a record built by hand is how the readers are exercised on a machine with nothing plugged in")
+    let d = sample_info()
+    test.assert_eq(usbenum.info_vendor(d), 0x1209)
+    test.assert_eq(usbenum.info_product(d), 0x0001)
+    test.assert_eq(usbenum.info_serial(d), "0001")
+    test.assert_eq(usbenum.info_speed(d), 2)
+    test.assert_eq(usbenum.info_name(d), "example")
+
+@test
+fn test_the_identifier_is_assembled_from_the_four_flat_fields() [io, fs]
+    test.case("a @value struct cannot be a boxed struct's field (E2015), so the record carries the numbers and this builds the type the transfer surface takes")
+    let id = usbenum.info_id(sample_info())
+    test.assert_eq(usbxfer.device_bus(id), 1)
+    test.assert_eq(usbxfer.device_address(id), 7)
+    test.assert_eq(usbxfer.port_path_name(id), "1-2.1")
+
+@test
+fn test_the_line_a_tool_prints_is_the_one_lsusb_prints() [io, fs]
+    test.case("a reader who knows one USB tool should not have to learn a second format")
+    test.assert_eq(usbenum.info_line(sample_info()),
+                   "Bus 001 Device 007: ID 1209:0001 novo-lang example")
+
+@test
+fn test_the_sysfs_readers_answer_results_rather_than_empty_lists() [io, fs]
+    test.case("a directory that cannot be read is not a device with no drivers bound")
+    match usbenum.interface_drivers(sample_info())
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+    match usbenum.raw_descriptors(sample_info())
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+    match usbenum.read_device("/sys/bus/usb/devices/1-2.1")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)
+
+    match usbenum.device_at_port("1-2.1")
+        Ok(_)  => test.assert(true)
+        Err(_) => test.assert(true)

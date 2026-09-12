@@ -1,0 +1,214 @@
+// usbbos.nv — the binary object store, and the two platform
+// capabilities a modern device declares inside it.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE BOS IS HOW A USB 2.0 DEVICE SAYS SOMETHING USB 2.0 HAS NO FIELD
+// FOR.  WebUSB — a page in a browser talking to a device with no
+// driver — and MS OS 2.0 — a device telling Windows which driver to
+// bind without an `.inf` file — are both platform capability
+// descriptors inside a BOS, identified by a 16-byte UUID.  Neither is
+// part of USB 2.0 and both are reached the same way, which is why they
+// are one module.
+//
+// A DEVICE MUST CLAIM 0x0210 IN bcdUSB BEFORE A HOST WILL ASK.  A
+// device that declares 0x0200 and implements a perfect BOS is never
+// asked for it, and nothing anywhere reports an error — the page
+// simply cannot see the device.  `bos_requires_bcd_usb` is that
+// requirement as a number a test can assert.
+//
+// THE UUIDS ARE ANSWERED BYTE BY BYTE for the same reason the
+// descriptors are: a `@value` struct cannot own a sixteen-byte buffer,
+// and a firmware wants the constant in flash rather than in a list it
+// builds at startup.  Both UUIDs are written little-endian in the
+// first three groups, which is how a Microsoft GUID is laid out and is
+// the detail that makes a hand-transcribed UUID wrong in a way no
+// host explains.
+
+// ── The BOS header ───────────────────────────────────────────────────
+
+// bLength of a BOS descriptor: 5.
+pub const USB_BOS_DESC_LEN = 5
+
+// The bcdUSB a device must declare before a host asks it for a BOS:
+// 0x0210.
+pub const USB_BOS_REQUIRES_BCD_USB = 0x0210
+
+// The five-byte header of a binary object store.
+pub @value
+struct UsbBosDesc
+    // wTotalLength — this header plus every capability descriptor.
+    total_length: Int
+    // bNumDeviceCaps — how many capabilities follow.
+    num_caps: Int
+
+// Build a BOS header.
+//
+// ```novo
+// use usbbos
+//
+// fn main() [io]
+//     println("${usbbos.bos_num_caps(usbbos.bos(57, 2))}")   // 2
+// ```
+pub fn bos(total_length: Int, num_caps: Int) -> UsbBosDesc []
+    todo("usb-nv.usbbos.bos")
+
+// wTotalLength.
+pub fn bos_total_length(b: UsbBosDesc) -> Int []
+    todo("usb-nv.usbbos.bos_total_length")
+
+// bNumDeviceCaps.
+pub fn bos_num_caps(b: UsbBosDesc) -> Int []
+    todo("usb-nv.usbbos.bos_num_caps")
+
+// The `i`-th wire byte of a BOS header.
+pub fn bos_byte(b: UsbBosDesc, i: Int) -> Int []
+    todo("usb-nv.usbbos.bos_byte")
+
+// The bcdUSB a device must declare for a host to ask for its BOS.
+//
+// A function rather than only a constant, so a device stack can assert
+// it against the device descriptor it was handed rather than against a
+// number somebody copied.
+//
+// ```novo
+// use usbbos
+//
+// fn main() [io]
+//     println("${usbbos.bos_requires_bcd_usb()}")   // 528
+// ```
+pub fn bos_requires_bcd_usb() -> Int []
+    todo("usb-nv.usbbos.bos_requires_bcd_usb")
+
+// ── Device capability types ──────────────────────────────────────────
+
+// bDevCapabilityType 0x02: USB 2.0 extension, which carries the link
+// power management bits.
+pub const USB_CAP_USB2_EXTENSION = 0x02
+// bDevCapabilityType 0x03: SuperSpeed USB.
+pub const USB_CAP_SUPERSPEED = 0x03
+// bDevCapabilityType 0x05: a platform capability, identified by a
+// UUID.  WebUSB and MS OS 2.0 are both this.
+pub const USB_CAP_PLATFORM = 0x05
+
+// bLength of a platform capability descriptor before its
+// capability-specific data: 20 — four bytes of header and the
+// sixteen-byte UUID.
+pub const USB_PLATFORM_CAP_HEADER_LEN = 20
+
+// The `i`-th byte of a platform capability header for a capability
+// whose specific data is `data_len` bytes long.
+pub fn platform_cap_byte(data_len: Int, i: Int) -> Int []
+    todo("usb-nv.usbbos.platform_cap_byte")
+
+// ── WebUSB ───────────────────────────────────────────────────────────
+
+// bLength of a WebUSB platform capability descriptor: 24.
+pub const USB_WEBUSB_CAP_LEN = 24
+
+// The `i`-th byte of the WebUSB platform capability UUID,
+// {3408b638-09a9-47a0-8bfd-a0768815b665}.
+//
+// ```novo
+// use usbbos
+//
+// fn main() [io]
+//     println("${usbbos.webusb_uuid_byte(0)}")   // 56
+// ```
+pub fn webusb_uuid_byte(i: Int) -> Int []
+    todo("usb-nv.usbbos.webusb_uuid_byte")
+
+// The `i`-th byte of a WebUSB platform capability descriptor.
+//
+// `vendor_code` is the bRequest a host sends as a VENDOR request to
+// fetch the URL descriptors; `landing_page` is the index of the URL a
+// browser offers when the device is plugged in, and 0 means "offer
+// none", which is a device that can be reached and does not advertise
+// itself.
+pub fn webusb_cap_byte(vendor_code: Int, landing_page: Int, i: Int) -> Int []
+    todo("usb-nv.usbbos.webusb_cap_byte")
+
+// bRequest value inside a WebUSB vendor request that asks for a URL
+// descriptor: 0x02.
+pub const USB_WEBUSB_GET_URL = 0x02
+
+// The scheme prefix `https://`, which a URL descriptor encodes as a
+// byte rather than as text.
+pub const USB_WEBUSB_SCHEME_HTTPS = 1
+// The scheme prefix `http://`.
+pub const USB_WEBUSB_SCHEME_HTTP = 0
+// No prefix — the URL carries its own scheme.
+pub const USB_WEBUSB_SCHEME_NONE = 255
+
+// How long the URL descriptor for `url` under `scheme` is: three bytes
+// of header plus the URL as UTF-8 with the scheme prefix removed.
+//
+// ```novo
+// use usbbos
+//
+// fn main() [io]
+//     println("${usbbos.webusb_url_len("example.com/dev")}")
+// ```
+pub fn webusb_url_len(url: Str) -> Int []
+    todo("usb-nv.usbbos.webusb_url_len")
+
+// The `i`-th byte of a WebUSB URL descriptor.
+pub fn webusb_url_byte(scheme: Int, url: Str, i: Int) -> Int []
+    todo("usb-nv.usbbos.webusb_url_byte")
+
+// ── MS OS 2.0 ────────────────────────────────────────────────────────
+
+// bLength of an MS OS 2.0 platform capability descriptor: 28.
+pub const USB_MSOS20_CAP_LEN = 28
+
+// The `i`-th byte of the MS OS 2.0 platform capability UUID,
+// {d8dd60df-4589-4cc7-9cd2-659d9e648a9f}.
+pub fn msos20_uuid_byte(i: Int) -> Int []
+    todo("usb-nv.usbbos.msos20_uuid_byte")
+
+// The `i`-th byte of an MS OS 2.0 platform capability descriptor.
+//
+// `descriptor_set_len` is how long the descriptor set the vendor
+// request answers is, and `vendor_code` is the bRequest that fetches
+// it.  The two numbers are what a host reads before it asks for
+// anything, and a set whose declared length disagrees with the bytes
+// sent makes Windows bind no driver and log nothing.
+pub fn msos20_cap_byte(vendor_code: Int, descriptor_set_len: Int, i: Int) -> Int []
+    todo("usb-nv.usbbos.msos20_cap_byte")
+
+// The Windows version an MS OS 2.0 descriptor set declares as its
+// minimum: 0x06030000, Windows 8.1.  A lower value is ignored and a
+// higher one excludes hosts for no reason.
+pub const USB_MSOS20_WINDOWS_8_1 = 0x06030000
+
+// wDescriptorType for the header of an MS OS 2.0 descriptor set.
+pub const USB_MSOS20_SET_HEADER = 0x00
+// wDescriptorType for a configuration subset.
+pub const USB_MSOS20_SUBSET_CONFIGURATION = 0x01
+// wDescriptorType for a function subset — the one that names which
+// interfaces the driver binds to.
+pub const USB_MSOS20_SUBSET_FUNCTION = 0x02
+// wDescriptorType for a compatible ID, which is how a device asks for
+// WinUSB by name.
+pub const USB_MSOS20_FEATURE_COMPATIBLE_ID = 0x03
+// wDescriptorType for a registry property, which is how a device
+// carries its own device interface GUID.
+pub const USB_MSOS20_FEATURE_REG_PROPERTY = 0x04
+
+// The compatible ID that asks Windows to bind WinUSB, as its eight
+// bytes: `WINUSB` padded with zeros.
+//
+// ```novo
+// use usbbos
+//
+// fn main() [io]
+//     println("${usbbos.winusb_compatible_id_byte(0)}")   // 87
+// ```
+pub fn winusb_compatible_id_byte(i: Int) -> Int []
+    todo("usb-nv.usbbos.winusb_compatible_id_byte")
+
+// Why a BOS would not be read by a host, or nothing: a bcdUSB below
+// 0x0210 on the device descriptor it belongs to, a total length that
+// does not account for the capabilities, a capability count of zero.
+pub fn check_bos(b: UsbBosDesc, bcd_usb: Int) -> ?UsbError []
+    todo("usb-nv.usbbos.check_bos")

@@ -1,0 +1,399 @@
+// usbcdc.nv — CDC-ACM: a serial port over USB.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// CDC-ACM IS TWO INTERFACES AND THAT IS THE WHOLE DIFFICULTY.  The
+// communications interface carries one interrupt IN endpoint and the
+// class descriptors; the data interface carries the bulk IN and bulk
+// OUT endpoints the bytes actually move over.  They have different
+// class codes — 0x02 and 0x0A — and a host binds its driver to the
+// PAIR, not to either one.  A device that declares them without an
+// interface association descriptor enumerates on Linux and appears as
+// two unrelated devices on Windows, which is the single most common
+// way a first CDC implementation is wrong.  `UsbCdcConfig` carries both
+// interface numbers so the association is computable rather than
+// remembered, and `cdc_iad` builds the descriptor that states it.
+//
+// THE LINE CODING IS ADVISORY AND THE README SAYS SO.  SET_LINE_CODING
+// tells the device what baud rate, parity and stop bits the host's
+// application asked for.  A device with a real UART behind it applies
+// them; a device that is only pretending to be a serial port ignores
+// them and must still answer GET_LINE_CODING with what it was last
+// told, because a host that reads back something different decides the
+// port is broken.  So the line coding is a value the device STORES,
+// and this module is the arithmetic for storing it.
+//
+// DTR IS NOT FLOW CONTROL.  SET_CONTROL_LINE_STATE's two bits are what
+// a terminal program uses to say "I have opened the port", and a
+// firmware that waits for DTR before sending anything will wait
+// forever behind a host that never sets it.  `cdc_dtr` and `cdc_rts`
+// read them; what a device does about them is the device's.
+
+use usbdesc
+
+// ── The class numbers ────────────────────────────────────────────────
+
+// bInterfaceSubClass for the abstract control model.
+pub const USB_CDC_SUBCLASS_ACM = 0x02
+// bInterfaceProtocol for the AT-command protocol the ACM subclass
+// names.  Almost every device declares 0x00 — no class-specific
+// protocol — and 0x01 is the one that tells a host to expect a modem.
+pub const USB_CDC_PROTOCOL_NONE = 0x00
+// bInterfaceProtocol 0x01: the V.250 AT commands.
+pub const USB_CDC_PROTOCOL_AT = 0x01
+
+// bDescriptorType for a CDC functional descriptor: an interface
+// descriptor's class-specific counterpart, 0x24.
+pub const USB_CDC_CS_INTERFACE = 0x24
+// bDescriptorType for a class-specific endpoint descriptor, 0x25.
+pub const USB_CDC_CS_ENDPOINT = 0x25
+
+// bDescriptorSubtype: the header functional descriptor.
+pub const USB_CDC_FD_HEADER = 0x00
+// bDescriptorSubtype: the call management functional descriptor.
+pub const USB_CDC_FD_CALL_MANAGEMENT = 0x01
+// bDescriptorSubtype: the abstract control management functional
+// descriptor, whose bmCapabilities says which class requests the
+// device answers.
+pub const USB_CDC_FD_ACM = 0x02
+// bDescriptorSubtype: the union functional descriptor, which names the
+// control interface and the data interface it speaks for.
+pub const USB_CDC_FD_UNION = 0x06
+
+// ── The class requests ───────────────────────────────────────────────
+
+// SET_LINE_CODING — seven bytes of baud rate, stop bits, parity and
+// data bits.
+pub const USB_CDC_REQ_SET_LINE_CODING = 0x20
+// GET_LINE_CODING — the same seven bytes back.
+pub const USB_CDC_REQ_GET_LINE_CODING = 0x21
+// SET_CONTROL_LINE_STATE — DTR and RTS, in wValue.
+pub const USB_CDC_REQ_SET_CONTROL_LINE_STATE = 0x22
+// SEND_BREAK — wValue is the break duration in milliseconds, and
+// 0xFFFF means "until I say stop".
+pub const USB_CDC_REQ_SEND_BREAK = 0x23
+
+// The DTR bit in SET_CONTROL_LINE_STATE's wValue.
+pub const USB_CDC_DTR = 0x01
+// The RTS bit.
+pub const USB_CDC_RTS = 0x02
+
+// ── The line coding ──────────────────────────────────────────────────
+
+// dwDTERate in bytes 0-3, and the three one-byte fields after it: the
+// seven bytes SET_LINE_CODING carries.
+//
+// Parity and stop bits are `Int` codes rather than an enum, because
+// this is a `@value` struct and a `@value` struct cannot hold an enum
+// at all (E2011).  The `USB_CDC_PARITY_*` and `USB_CDC_STOP_*`
+// constants are the vocabulary.
+pub @value
+struct UsbLineCoding
+    // dwDTERate — the baud rate, in bits per second.
+    baud: Int
+    // bCharFormat: one of the `USB_CDC_STOP_*` codes.
+    stop_bits: Int
+    // bParityType: one of the `USB_CDC_PARITY_*` codes.
+    parity: Int
+    // bDataBits: 5, 6, 7, 8 or 16.
+    data_bits: Int
+
+// One stop bit.
+pub const USB_CDC_STOP_1 = 0
+// One and a half stop bits, which only a 5-data-bit format uses.
+pub const USB_CDC_STOP_1_5 = 1
+// Two stop bits.
+pub const USB_CDC_STOP_2 = 2
+
+// No parity.
+pub const USB_CDC_PARITY_NONE = 0
+// Odd parity.
+pub const USB_CDC_PARITY_ODD = 1
+// Even parity.
+pub const USB_CDC_PARITY_EVEN = 2
+// Mark parity — the parity bit is always 1.
+pub const USB_CDC_PARITY_MARK = 3
+// Space parity — the parity bit is always 0.
+pub const USB_CDC_PARITY_SPACE = 4
+
+// Build a line coding.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     let l = usbcdc.line_coding(115200, usbcdc.USB_CDC_STOP_1,
+//                                usbcdc.USB_CDC_PARITY_NONE, 8)
+//     println("${usbcdc.baud(l)}")   // 115200
+// ```
+pub fn line_coding(baud: Int, stop_bits: Int, parity: Int, data_bits: Int) -> UsbLineCoding []
+    todo("usb-nv.usbcdc.line_coding")
+
+// The line coding a device answers before a host has set one: 115200
+// 8N1, which is what almost every host's driver assumes anyway.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     println("${usbcdc.baud(usbcdc.default_line_coding())}")   // 115200
+// ```
+pub fn default_line_coding() -> UsbLineCoding []
+    todo("usb-nv.usbcdc.default_line_coding")
+
+// The baud rate.
+pub fn baud(l: UsbLineCoding) -> Int []
+    todo("usb-nv.usbcdc.baud")
+
+// The stop-bit code.
+pub fn stop_bits(l: UsbLineCoding) -> Int []
+    todo("usb-nv.usbcdc.stop_bits")
+
+// The parity code.
+pub fn parity(l: UsbLineCoding) -> Int []
+    todo("usb-nv.usbcdc.parity")
+
+// The number of data bits.
+pub fn data_bits(l: UsbLineCoding) -> Int []
+    todo("usb-nv.usbcdc.data_bits")
+
+// The `i`-th of the seven wire bytes, little-endian baud rate first.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     let l = usbcdc.line_coding(9600, 0, 0, 8)
+//     println("${usbcdc.line_coding_byte(l, 6)}")   // 8
+// ```
+pub fn line_coding_byte(l: UsbLineCoding, i: Int) -> Int []
+    todo("usb-nv.usbcdc.line_coding_byte")
+
+// Decode a line coding from the seven bytes at `off`.
+//
+// Answers a zeroed value when fewer than seven bytes are available;
+// `check_line_coding` is the refusal.
+pub fn line_coding_decode(buf: [u8], off: Int) -> UsbLineCoding []
+    todo("usb-nv.usbcdc.line_coding_decode")
+
+// Why a line coding cannot be applied to a real UART, or nothing.
+//
+// A baud rate of 0, a data-bit count that is not 5, 6, 7, 8 or 16, and
+// one-and-a-half stop bits on anything but a 5-bit format are the
+// three the specification rules out.
+pub fn check_line_coding(l: UsbLineCoding) -> ?UsbError []
+    todo("usb-nv.usbcdc.check_line_coding")
+
+// The seven bytes as a `Str` a log can print — "115200 8N1".
+pub fn line_coding_name(l: UsbLineCoding) -> Str []
+    todo("usb-nv.usbcdc.line_coding_name")
+
+// ── Control line state ───────────────────────────────────────────────
+
+// Whether DTR is asserted in a SET_CONTROL_LINE_STATE wValue.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     println("${usbcdc.cdc_dtr(usbcdc.USB_CDC_DTR)}")   // true
+// ```
+pub fn cdc_dtr(w_value: Int) -> Bool []
+    todo("usb-nv.usbcdc.cdc_dtr")
+
+// Whether RTS is asserted.
+pub fn cdc_rts(w_value: Int) -> Bool []
+    todo("usb-nv.usbcdc.cdc_rts")
+
+// The break duration a SEND_BREAK asks for, in milliseconds; 0xFFFF
+// means "hold the break until told otherwise", which is a different
+// thing from 65535 milliseconds.
+pub fn break_ms(w_value: Int) -> Int []
+    todo("usb-nv.usbcdc.break_ms")
+
+// Whether a SEND_BREAK asks for an indefinite break.
+pub fn break_is_indefinite(w_value: Int) -> Bool []
+    todo("usb-nv.usbcdc.break_is_indefinite")
+
+// ── The two interfaces ───────────────────────────────────────────────
+
+// Which interface numbers and endpoint addresses a CDC-ACM function
+// occupies.
+//
+// The value a device stack is configured with, and the value the
+// descriptor builders below read: every number a CDC configuration
+// needs is here, so the descriptors cannot disagree with each other.
+pub @value
+struct UsbCdcConfig
+    // bInterfaceNumber of the communications interface.
+    comm_interface: Int
+    // bInterfaceNumber of the data interface.  It must be
+    // `comm_interface + 1` for a host to accept the union descriptor,
+    // and `check_cdc_config` says so.
+    data_interface: Int
+    // The interrupt IN endpoint address on the communications
+    // interface — where the serial state notification goes.
+    notify_endpoint: Int
+    // The bulk IN endpoint address on the data interface.
+    in_endpoint: Int
+    // The bulk OUT endpoint address.
+    out_endpoint: Int
+    // The bulk endpoints' packet size: 64 at full speed, 512 at high
+    // speed.
+    packet_size: Int
+    // bInterval for the notification endpoint, in frames.
+    notify_interval: Int
+
+// Build a CDC-ACM configuration.
+//
+// ```novo
+// use usbcdc
+// use usbdesc
+//
+// fn main() [io]
+//     let c = usbcdc.cdc_config(0, 1, usbdesc.endpoint_in(1),
+//                               usbdesc.endpoint_in(2), usbdesc.endpoint_out(2),
+//                               64, 16)
+//     println("${usbcdc.comm_interface(c)}")
+// ```
+pub fn cdc_config(comm_interface: Int, data_interface: Int, notify_endpoint: Int, in_endpoint: Int,
+                  out_endpoint: Int, packet_size: Int, notify_interval: Int) -> UsbCdcConfig []
+    todo("usb-nv.usbcdc.cdc_config")
+
+// The communications interface number.
+pub fn comm_interface(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.comm_interface")
+
+// The data interface number.
+pub fn data_interface(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.data_interface")
+
+// The notification endpoint's address.
+pub fn notify_endpoint(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.notify_endpoint")
+
+// The bulk IN endpoint's address.
+pub fn in_endpoint(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.in_endpoint")
+
+// The bulk OUT endpoint's address.
+pub fn out_endpoint(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.out_endpoint")
+
+// The bulk endpoints' packet size.
+pub fn packet_size(c: UsbCdcConfig) -> Int []
+    todo("usb-nv.usbcdc.packet_size")
+
+// Why a CDC configuration would not enumerate, or nothing.
+//
+// The data interface not immediately following the communications one,
+// an IN address on the OUT endpoint, and a bulk packet size the speed
+// does not allow are the three that produce a device a host sees and
+// cannot use.
+pub fn check_cdc_config(c: UsbCdcConfig, speed: Int) -> ?UsbError []
+    todo("usb-nv.usbcdc.check_cdc_config")
+
+// ── The descriptors a CDC function contributes ───────────────────────
+
+// The interface association descriptor that binds the two interfaces
+// into one function.
+//
+// The descriptor a first CDC implementation leaves out.  Without it a
+// host may bind a driver to the communications interface alone, and
+// what the user sees is a port that opens and moves no bytes.
+//
+// ```novo
+// use usbcdc
+// use usbdesc
+//
+// fn main() [io]
+//     let c = usbcdc.cdc_config(0, 1, 0x81, 0x82, 0x02, 64, 16)
+//     println("${usbdesc.iad_interface_count(usbcdc.cdc_iad(c))}")   // 2
+// ```
+pub fn cdc_iad(c: UsbCdcConfig) -> UsbIadDesc []
+    todo("usb-nv.usbcdc.cdc_iad")
+
+// The communications interface descriptor: class 0x02, subclass ACM,
+// one endpoint.
+pub fn cdc_comm_interface_desc(c: UsbCdcConfig) -> UsbInterfaceDesc []
+    todo("usb-nv.usbcdc.cdc_comm_interface_desc")
+
+// The data interface descriptor: class 0x0A, two endpoints.
+pub fn cdc_data_interface_desc(c: UsbCdcConfig) -> UsbInterfaceDesc []
+    todo("usb-nv.usbcdc.cdc_data_interface_desc")
+
+// The notification endpoint descriptor.
+pub fn cdc_notify_endpoint_desc(c: UsbCdcConfig) -> UsbEndpointDesc []
+    todo("usb-nv.usbcdc.cdc_notify_endpoint_desc")
+
+// The bulk IN endpoint descriptor.
+pub fn cdc_in_endpoint_desc(c: UsbCdcConfig) -> UsbEndpointDesc []
+    todo("usb-nv.usbcdc.cdc_in_endpoint_desc")
+
+// The bulk OUT endpoint descriptor.
+pub fn cdc_out_endpoint_desc(c: UsbCdcConfig) -> UsbEndpointDesc []
+    todo("usb-nv.usbcdc.cdc_out_endpoint_desc")
+
+// How many bytes the four CDC functional descriptors occupy: 5 for the
+// header, 5 for call management, 4 for ACM and 5 for the union, which
+// is 19.
+pub const USB_CDC_FUNCTIONAL_LEN = 19
+
+// The `i`-th byte of the four functional descriptors, laid out in the
+// order a host expects them: header, call management, ACM, union.
+pub fn cdc_functional_byte(c: UsbCdcConfig, i: Int) -> Int []
+    todo("usb-nv.usbcdc.cdc_functional_byte")
+
+// The total length a CDC-ACM function adds to a configuration: the
+// association descriptor, the two interface descriptors, the
+// functional descriptors and the three endpoint descriptors.
+//
+// The number `wTotalLength` needs and the number a hand-laid-out
+// configuration gets wrong.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     println("${usbcdc.cdc_total_len()}")
+// ```
+pub fn cdc_total_len() -> Int []
+    todo("usb-nv.usbcdc.cdc_total_len")
+
+// ── The serial state notification ────────────────────────────────────
+
+// The notification a device sends on the interrupt endpoint to report
+// the modem lines it is driving: DCD, DSR, break, ring and the three
+// error counters.
+pub const USB_CDC_NOTIFY_SERIAL_STATE = 0x20
+
+// The bit in the serial state that says the device has data carrier.
+pub const USB_CDC_SERIAL_DCD = 0x01
+// The bit that says the device is ready.
+pub const USB_CDC_SERIAL_DSR = 0x02
+// The bit that reports a break on the device's side.
+pub const USB_CDC_SERIAL_BREAK = 0x04
+// The bit that reports a ring.
+pub const USB_CDC_SERIAL_RING = 0x08
+// The bit that reports a framing error.
+pub const USB_CDC_SERIAL_FRAMING = 0x10
+// The bit that reports a parity error.
+pub const USB_CDC_SERIAL_PARITY = 0x20
+// The bit that reports an overrun.
+pub const USB_CDC_SERIAL_OVERRUN = 0x40
+
+// How long a serial state notification is: eight bytes of header and
+// two of state.
+pub const USB_CDC_SERIAL_STATE_LEN = 10
+
+// The `i`-th byte of a serial state notification for interface
+// `comm_interface` carrying `state`.
+//
+// ```novo
+// use usbcdc
+//
+// fn main() [io]
+//     println("${usbcdc.serial_state_byte(0, usbcdc.USB_CDC_SERIAL_DCD, 1)}")
+// ```
+pub fn serial_state_byte(comm_interface: Int, state: Int, i: Int) -> Int []
+    todo("usb-nv.usbcdc.serial_state_byte")
