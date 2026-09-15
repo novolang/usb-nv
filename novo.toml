@@ -1,6 +1,6 @@
 [package]
 name        = "usb-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "The USB 2.0 device side with no peripheral attached: the standard descriptors as values that answer their own wire bytes, the control-transfer state machine with the standard requests and the SET_ADDRESS ordering the specification requires, CDC-ACM and HID as classes over one device model, and a host-side enumeration and transfer surface beside them.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
