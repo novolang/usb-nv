@@ -44,11 +44,11 @@ impl UsbHostBackend[] for UsbTape
 
     fn usb_control(self, handle: Int, request_type: Int, request: Int, value: Int, index: Int,
                    data: Bytes, timeout_ms: Int) -> Result<Bytes, UsbError> []
-        Ok(data)
+        Ok(bytes.clone(data))
 
     fn usb_transfer(self, handle: Int, endpoint: Int, data: Bytes, max: Int,
                     timeout_ms: Int) -> Result<Bytes, UsbError> []
-        Ok(data)
+        Ok(bytes.clone(data))
 
 fn tape() -> UsbTape
     UsbTape { handle: 1 }
