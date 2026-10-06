@@ -62,6 +62,8 @@ novo pkg add usb-nv
 
 ## Example
 
+This example compiles; every call in it panics until 0.1.0.
+
 ```novo
 use usbdesc
 use usbctl
@@ -186,13 +188,18 @@ in its interrupt handler.
 novo build --target=nrf52-qemu tests/embedded_probe.nv
 ```
 
-That command was run against this release. It produces a Cortex-M4
-executable, `embedded_probe.elf`. The probe builds; it is not run, because
-every function it calls is a `todo()` that would panic on the first line.
+The command produces a Cortex-M4 executable, `embedded_probe.elf`. The probe
+builds and is not run, because every function it calls is a `todo()` that
+would panic on the first line.
 
 `usbenum` is outside the claim. It reads the file system, and one host-only
 function anywhere in a compilation unit is an undefined symbol at link time
-on a device, whether or not the firmware calls it.
+on a device, whether or not the firmware calls it. The manifest names it in
+`host_modules`, so a device build leaves it out.
+
+The registry measures the tiers per module, and its page for this package
+shows the split: the embedded, rt and wasm tiers list the seven modules other
+than `usbenum`, and the system and app tiers cover all eight.
 
 `usbxfer` stays inside the claim even though it is the host's view of a bus,
 because every effect in it is a parameter. A package that declares a transfer
@@ -203,19 +210,18 @@ surface has not performed a transfer.
 - **A peripheral driver.** Nothing here writes a register. The nRF52840 and
   the RP2040 both have a full-speed device controller, and the code that
   drives one belongs with the board.
-- **A host transfer implementation.** `usbxfer.UsbHostBackend[e]` is a
-  contract that nothing in this project satisfies yet. Publishing it before a
-  provider exists is deliberate: the request shapes and the error cases get
-  reviewed before somebody spends a month on transfer submission. Until then
-  a host tool built on this package can list devices and cannot talk to them.
+- **A host transfer implementation.** `usbxfer.UsbHostBackend[e]` is the
+  contract a host transfer provider satisfies, and this package supplies
+  none. A host tool built on this package alone can list devices and cannot
+  talk to them.
 - **Mass storage, audio, MIDI and the other classes.** Each would be a module
   over the same device model rather than a change to it.
 - **USB 3.** SuperSpeed has its own descriptors, its own link layer and its
   own endpoint companion descriptors. The capability type for it is named in
   `usbbos` and nothing more.
-- **A buffer for anything.** See rules 5 and 8.
-  [heapless-nv](https://novo-lang.org/packages/heapless-nv) is where a
-  firmware's endpoint tables and transmit buffers come from.
+- **A buffer for anything.** See rules 5 and 8. A firmware keeps its
+  endpoint tables and transmit buffers in the language's fixed-capacity
+  collections, `Vec[T; N]` and its family (SPEC section 14.8).
 
 ## Related packages
 
@@ -223,8 +229,6 @@ surface has not performed a transfer.
   this package's control endpoint. It carries the DFU 1.1 state machine and
   is written against these descriptor and setup types, so the two cannot
   disagree about a byte.
-- [heapless-nv](https://novo-lang.org/packages/heapless-nv) is the
-  fixed-capacity storage a device stack pairs this with.
 - [bitfield-nv](https://novo-lang.org/packages/bitfield-nv) describes the
   registers of a board's USB controller. Nothing in this package touches
   memory.

@@ -5,6 +5,31 @@ All notable changes to usb-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.3 — 2026-10-06
+
+README and comments only.  No signature, type or effect row changed, and
+every body is still `todo()`.
+
+### Changed
+
+- The README's "Running on a microcontroller" section says what the
+  registry shows: the embedded, rt and wasm tiers list the seven modules
+  other than `usbenum`, and the system and app tiers list all eight.
+  Version 0.0.2 was published on 2026-09-15, before the registry
+  measured tiers per module (2026-09-23), so its page listed only the
+  system and app tiers.  This release is the first whose page shows the
+  split.
+- The example carries the interface stamp beside it.
+- The README and the manifest name the language's fixed-capacity
+  collections (SPEC section 14.8) for a firmware's endpoint tables and
+  buffers.  They named heapless-nv, which is withdrawn.
+- Sentences about this project's state moved here from the README.  On
+  2026-10-06 no published package satisfies
+  `usbxfer.UsbHostBackend[e]`.  The contract was published before a
+  provider so that the request shapes and the error cases are reviewed
+  before transfer submission is written.  The probe command in the
+  README was run against this release on that date.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.

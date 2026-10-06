@@ -1,6 +1,6 @@
 [package]
 name        = "usb-nv"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "The USB 2.0 device side with no peripheral attached: the standard descriptors as values that answer their own wire bytes, the control-transfer state machine with the standard requests and the SET_ADDRESS ordering the specification requires, CDC-ACM and HID as classes over one device model, and a host-side enumeration and transfer surface beside them.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
@@ -56,8 +56,8 @@ novo        = ">= 0.8.9"
 # but the language, and that is the property that lets the same modules
 # sit under a firmware and under a host tool.
 #
-# NOT heapless-nv, and the absence is the design.  An endpoint table
-# and a descriptor set are the CALLER's storage — a device stack that
-# owned them would have to know how many interfaces a product has
-# before the product exists.  A firmware pairs this with heapless-nv
-# for its own tables; the README says so.
+# An endpoint table and a descriptor set are the CALLER's storage.  A
+# device stack that owned them would have to know how many interfaces
+# a product has before the product exists.  A firmware keeps its own
+# tables in the language's fixed-capacity collections (SPEC section
+# 14.8); the README says so.
